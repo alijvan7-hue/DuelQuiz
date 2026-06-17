@@ -131,9 +131,14 @@ async def leaderboard_callback(call: CallbackQuery, db: Database) -> None:
         if not rows:
             text += rtl_line("هنوز امتیازی ثبت نشده است.")
         for i, r in enumerate(rows, 1):
-            name = r['first_name'] or (('@' + r['username']) if r['username'] else str(r['telegram_id']))
-            score_label = "کاپ" if basis == "league" else "امتیاز"
-            text += rtl_line(f"{i}. {name} | {r['league_name']} | 🏆 {r['cups']} | سطح {r['level']} | {score_label}: {r['score']}") + "\n"
+            raw_name = r['first_name'] or (('@' + r['username']) if r['username'] else str(r['telegram_id']))
+            name = raw_name if len(raw_name) <= 17 else raw_name[:17] + "..."
+            safe_name = f"\u2068{name}\u2069"
+            if basis == "league":
+                line = f"{i}. {safe_name} | {r['league_name']} | جام: {r['cups']} | سطح: {r['level']}"
+            else:
+                line = f"{i}. {safe_name} | {r['league_name']} | جام: {r['cups']} | سطح: {r['level']} | امتیاز: {r['score']}"
+            text += rtl_line(line) + "\n"
         await call.message.edit_text(text, reply_markup=leaderboard_period_keyboard(basis))
         await call.answer()
     except Exception:

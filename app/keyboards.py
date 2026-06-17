@@ -250,20 +250,30 @@ def admin_leagues_keyboard(leagues) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def question_manage_keyboard(genres) -> InlineKeyboardMarkup:
+def question_manage_keyboard() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    for g, c in genres:
-        b.button(text=f"{g} ({c})", callback_data=f"qadmin:genre:{g}")
+    b.button(text="⏳ سوالات در صف بررسی", callback_data="qadmin_mode:pending")
+    b.button(text="🔎 جستجوی سوالات تاییدشده بر اساس ژانر", callback_data="qadmin_mode:active")
     b.button(text="↩️ برگشت", callback_data="admin:back")
     b.adjust(1)
     return b.as_markup()
 
 
-def pending_questions_keyboard(questions, genre: str) -> InlineKeyboardMarkup:
+def question_genres_keyboard(genres, mode: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for g, c in genres:
+        b.button(text=f"{g} ({c})", callback_data=f"qadmin:genre:{mode}:{g}")
+    b.button(text="↩️ برگشت", callback_data="admin:question_manage")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def pending_questions_keyboard(questions, genre: str, mode: str = "pending") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for q in questions:
-        b.button(text=f"#{q['id']} {q['text'][:35]}", callback_data=f"qadmin:view:{q['id']}")
-    b.button(text="↩️ ژانرها", callback_data="admin:question_manage")
+        status = "⏳" if q['status'] == 'pending' else "✅"
+        b.button(text=f"{status} #{q['id']} {q['text'][:35]}", callback_data=f"qadmin:view:{q['id']}")
+    b.button(text="↩️ ژانرها", callback_data=f"qadmin_mode:{mode}")
     b.adjust(1)
     return b.as_markup()
 

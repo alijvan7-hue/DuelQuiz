@@ -10,7 +10,7 @@ from app.keyboards import (
     admin_panel, settings_keyboard, user_admin_keyboard, main_menu, cancel_keyboard,
     admin_shop_types_keyboard, admin_shop_packages_keyboard, admin_shop_edit_keyboard,
     admin_leagues_keyboard, admin_league_edit_keyboard, admin_discounts_keyboard,
-    discount_kind_keyboard, question_manage_keyboard, pending_questions_keyboard,
+    discount_kind_keyboard, question_manage_keyboard, question_genres_keyboard, pending_questions_keyboard,
     invalid_questions_confirm_keyboard, review_question_keyboard,
 )
 from app.states import AdminFlow, BulkQuestionImport, ShopPackageFlow, LeagueFlow, DiscountFlow, QuestionCleanupFlow
@@ -122,8 +122,7 @@ async def admin_callback(call: CallbackQuery, db: Database, state: FSMContext, b
             await state.set_state(AdminFlow.waiting_start_photo)
             await call.message.answer("عکس جدید پیام /start را ارسال کنید. برای حذف عکس، متن /remove_photo را بفرستید.", reply_markup=cancel_keyboard())
         elif action == 'question_manage':
-            counts = await db.pending_question_genre_counts()
-            await call.message.answer("سوالات در صف تایید بر اساس ژانر:", reply_markup=question_manage_keyboard(counts))
+            await call.message.answer("مدیریت سوالات — یکی از بخش‌ها را انتخاب کن:", reply_markup=question_manage_keyboard())
         elif action == 'question_cleanup':
             invalid = await db.invalid_genre_questions()
             if not invalid:
@@ -649,16 +648,35 @@ async def discount_expires(message: Message, db: Database, state: FSMContext) ->
         await message.answer("خطا در ساخت کد تخفیف. شاید کد تکراری است.")
 
 
+@router.callback_query(F.data.startswith("qadmin_mode:"))
+async def question_admin_mode(call: CallbackQuery, db: Database) -> None:
+    try:
+        if not await require_admin_call(call, db):
+            return
+        mode = call.data.split(":", 1)[1]
+        status = "pending" if mode == "pending" else "active"
+        title = "سوالات در صف بررسی" if mode == "pending" else "جستجوی سوالات تاییدشده"
+        counts = await db.question_genre_counts(status)
+        await call.message.answer(f"{title}: ژانر را انتخاب کن:", reply_markup=question_genres_keyboard(counts, mode))
+        await call.answer()
+    except Exception:
+        logger.exception("Question admin mode failed")
+        await call.answer("خطا", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("qadmin:"))
 async def question_admin_callback(call: CallbackQuery, db: Database) -> None:
     try:
         if not await require_admin_call(call, db): return
-        parts = call.data.split(":", 2)
+        parts = call.data.split(":", 3)
         action = parts[1]
         if action == "genre":
-            genre = parts[2]
-            qs = await db.pending_questions_by_genre(genre)
-            await call.message.answer(f"سوالات pending ژانر {genre}:", reply_markup=pending_questions_keyboard(qs, genre))
+            mode = parts[2]
+            genre = parts[3]
+            status = "pending" if mode == "pending" else "active"
+            qs = await db.questions_by_genre(genre, status)
+            title = "در صف بررسی" if mode == "pending" else "تاییدشده"
+            await call.message.answer(f"سوالات {title} ژانر {genre}:", reply_markup=pending_questions_keyboard(qs, genre, mode))
         elif action == "view":
             q = await db.get_question(int(parts[2]))
             if not q:

@@ -911,12 +911,23 @@ class Database:
             await self.conn.commit()
         return len(rows)
 
-    async def pending_question_genre_counts(self) -> list[tuple[str, int]]:
-        rows = await self.fetchall("SELECT genre, COUNT(*) c FROM questions WHERE status='pending' GROUP BY genre ORDER BY genre")
+    async def question_genre_counts(self, status: str = "pending") -> list[tuple[str, int]]:
+        rows = await self.fetchall("""SELECT g.name genre, COUNT(q.id) c
+                                      FROM genres g
+                                      LEFT JOIN questions q ON q.genre=g.name AND q.status=?
+                                      WHERE g.is_active=1
+                                      GROUP BY g.name,g.sort_order
+                                      ORDER BY g.sort_order,g.name""", (status,))
         return [(r["genre"], int(r["c"])) for r in rows]
 
+    async def pending_question_genre_counts(self) -> list[tuple[str, int]]:
+        return await self.question_genre_counts("pending")
+
+    async def questions_by_genre(self, genre: str, status: str = "pending") -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT * FROM questions WHERE status=? AND genre=? ORDER BY created_at DESC LIMIT 30", (status, genre))
+
     async def pending_questions_by_genre(self, genre: str) -> list[aiosqlite.Row]:
-        return await self.fetchall("SELECT * FROM questions WHERE status='pending' AND genre=? ORDER BY created_at LIMIT 20", (genre,))
+        return await self.questions_by_genre(genre, "pending")
 
     async def get_question(self, qid: int) -> aiosqlite.Row | None:
         return await self.fetchone("SELECT * FROM questions WHERE id=?", (qid,))

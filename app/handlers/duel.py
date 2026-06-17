@@ -28,6 +28,7 @@ class DuelRuntime:
 
 runtimes: dict[int, DuelRuntime] = {}
 user_genre_temp: dict[tuple[int, int], set[str]] = {}
+user_offer_temp: dict[tuple[int, int], list[str]] = {}
 queue_timeout_tasks: dict[int, asyncio.Task] = {}
 
 
@@ -143,7 +144,7 @@ async def offer_genres(duel_id: int, db: Database, bot: Bot) -> None:
     candidates = [g for g in all_genres if g not in already]
     offer_n = await db.get_int('genres_to_offer', 4)
     choose_n = await db.get_int('genres_to_choose', 2)
-    if len(candidates) < offer_n:
+    if len(candidates) < offer_n + 1:
         await bot.send_message(duel['player1_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد؛ هزینه پرداخت‌شده برگردانده شد.")
         await bot.send_message(duel['player2_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد؛ هزینه پرداخت‌شده برگردانده شد.")
         if duel['invite_token']:
@@ -154,11 +155,23 @@ async def offer_genres(duel_id: int, db: Database, bot: Bot) -> None:
             await db.change_coins(duel['player2_id'], cost, 'duel_cancel_refund', duel_id)
         await db.execute_write("UPDATE duels SET status='cancelled' WHERE id=?", (duel_id,))
         return
-    genres = random.sample(candidates, offer_n)
-    await db.set_offered_genres(duel_id, genres)
+    shared_count = max(1, min(offer_n - 1, len(candidates) - 2))
+    shared = random.sample(candidates, shared_count)
+    remaining = [g for g in candidates if g not in shared]
+    unique1 = random.sample(remaining, offer_n - shared_count)
+    remaining2 = [g for g in remaining if g not in unique1]
+    if len(remaining2) < offer_n - shared_count:
+        remaining2 = remaining
+    unique2 = random.sample(remaining2, offer_n - shared_count)
+    offers = {
+        duel['player1_id']: random.sample(shared + unique1, offer_n),
+        duel['player2_id']: random.sample(shared + unique2, offer_n),
+    }
+    await db.set_offered_genres(duel_id, list(dict.fromkeys(offers[duel['player1_id']] + offers[duel['player2_id']])))
     for uid in [duel['player1_id'], duel['player2_id']]:
         user_genre_temp[(duel_id, uid)] = set()
-        await bot.send_message(uid, f"از ژانرهای زیر دقیقاً {choose_n} مورد را انتخاب کن:", reply_markup=genres_keyboard(duel_id, genres, set(), choose_n))
+        user_offer_temp[(duel_id, uid)] = offers[uid]
+        await bot.send_message(uid, f"از ژانرهای زیر دقیقاً {choose_n} مورد را انتخاب کن:", reply_markup=genres_keyboard(duel_id, offers[uid], set(), choose_n))
 
 
 @router.callback_query(F.data.startswith("genre:"))
@@ -180,7 +193,9 @@ async def genre_toggle(call: CallbackQuery, db: Database) -> None:
         else:
             await call.answer(f"حداکثر {choose_n} ژانر انتخاب می‌شود.", show_alert=True)
             return
-        offered = (duel['offered_genres'] or '').split('|')[-await db.get_int('genres_to_offer', 4):]
+        offered = user_offer_temp.get((duel_id, call.from_user.id), [])
+        if not offered:
+            offered = (duel['offered_genres'] or '').split('|')[-await db.get_int('genres_to_offer', 4):]
         await call.message.edit_reply_markup(reply_markup=genres_keyboard(duel_id, offered, selected, choose_n))
         await call.answer()
     except Exception:

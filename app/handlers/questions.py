@@ -79,12 +79,17 @@ async def q_correct(message: Message, state: FSMContext, db: Database) -> None:
 @router.message(QuestionSubmit.genre, F.text)
 async def q_genre(message: Message, db: Database, state: FSMContext, bot: Bot, admin_review_channel_id: int | None) -> None:
     try:
+        genre = message.text.strip()
+        valid_genres = await db.all_genres()
+        if genre not in valid_genres:
+            await message.answer("ژانر نامعتبر است. لطفاً دقیقاً یکی از ژانرهای مجاز را بدون کم/زیاد کردن بنویس:\n" + "، ".join(valid_genres))
+            return
         d = await state.get_data()
         opts = [d['option1'], d['option2'], d['option3'], d['option4']]
-        qid = await db.submit_question(message.from_user.id, d['text'], opts, d['correct'], message.text)
+        qid = await db.submit_question(message.from_user.id, d['text'], opts, d['correct'], genre)
         if admin_review_channel_id:
             text = (
-                f"➕ سوال پیشنهادی #{qid}\nSubmitter: <code>{message.from_user.id}</code>\nGenre: {message.text}\nDate: {jalali_datetime(now_iso())}\n\n"
+                f"➕ سوال پیشنهادی #{qid}\nSubmitter: <code>{message.from_user.id}</code>\nGenre: {genre}\nDate: {jalali_datetime(now_iso())}\n\n"
                 f"{d['text']}\n1) {opts[0]}\n2) {opts[1]}\n3) {opts[2]}\n4) {opts[3]}\nCorrect: {d['correct']}"
             )
             await bot.send_message(admin_review_channel_id, text, reply_markup=review_question_keyboard(qid))
