@@ -1,0 +1,114 @@
+import logging
+from aiogram import Bot, Router, F
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
+from app.db import Database
+from app.keyboards import review_question_keyboard, cancel_keyboard, main_menu
+from app.states import QuestionSubmit
+
+logger = logging.getLogger(__name__)
+router = Router()
+
+
+@router.message(F.text == "➕ ثبت سوال")
+async def submit_entry(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        limit = await db.get_int('daily_question_limit', 5)
+        used = await db.daily_submissions_count(message.from_user.id)
+        if used >= limit:
+            await message.answer(f"سقف ثبت سوال امروز شما ({limit}) تکمیل شده است.")
+            return
+        await state.set_state(QuestionSubmit.text)
+        await message.answer("ثبت سوال:", reply_markup=ReplyKeyboardRemove())
+        await message.answer("متن سوال را ارسال کن.", reply_markup=cancel_keyboard())
+    except Exception:
+        logger.exception("Submit entry failed")
+        await message.answer("خطا.")
+
+
+@router.message(QuestionSubmit.text, F.text)
+async def q_text(message: Message, state: FSMContext) -> None:
+    await state.update_data(text=message.text)
+    await state.set_state(QuestionSubmit.option1)
+    await message.answer("گزینه ۱:")
+
+
+@router.message(QuestionSubmit.option1, F.text)
+async def q_o1(message: Message, state: FSMContext) -> None:
+    await state.update_data(option1=message.text)
+    await state.set_state(QuestionSubmit.option2)
+    await message.answer("گزینه ۲:")
+
+
+@router.message(QuestionSubmit.option2, F.text)
+async def q_o2(message: Message, state: FSMContext) -> None:
+    await state.update_data(option2=message.text)
+    await state.set_state(QuestionSubmit.option3)
+    await message.answer("گزینه ۳:")
+
+
+@router.message(QuestionSubmit.option3, F.text)
+async def q_o3(message: Message, state: FSMContext) -> None:
+    await state.update_data(option3=message.text)
+    await state.set_state(QuestionSubmit.option4)
+    await message.answer("گزینه ۴:")
+
+
+@router.message(QuestionSubmit.option4, F.text)
+async def q_o4(message: Message, state: FSMContext) -> None:
+    await state.update_data(option4=message.text)
+    await state.set_state(QuestionSubmit.correct)
+    await message.answer("شماره گزینه صحیح را بفرست (۱ تا ۴):")
+
+
+@router.message(QuestionSubmit.correct, F.text)
+async def q_correct(message: Message, state: FSMContext, db: Database) -> None:
+    try:
+        n = int(message.text.strip())
+        if n not in [1, 2, 3, 4]:
+            raise ValueError
+        await state.update_data(correct=n)
+        await state.set_state(QuestionSubmit.genre)
+        genres = "، ".join(await db.all_genres())
+        await message.answer(f"ژانر/دسته‌بندی سوال را بنویس. ژانرهای مجاز:\n{genres}", reply_markup=cancel_keyboard())
+    except ValueError:
+        await message.answer("فقط عدد ۱ تا ۴ قابل قبول است.")
+
+
+@router.message(QuestionSubmit.genre, F.text)
+async def q_genre(message: Message, db: Database, state: FSMContext, bot: Bot, admin_review_channel_id: int | None) -> None:
+    try:
+        d = await state.get_data()
+        opts = [d['option1'], d['option2'], d['option3'], d['option4']]
+        qid = await db.submit_question(message.from_user.id, d['text'], opts, d['correct'], message.text)
+        if admin_review_channel_id:
+            text = (
+                f"➕ سوال پیشنهادی #{qid}\nSubmitter: <code>{message.from_user.id}</code>\nGenre: {message.text}\n\n"
+                f"{d['text']}\n1) {opts[0]}\n2) {opts[1]}\n3) {opts[2]}\n4) {opts[3]}\nCorrect: {d['correct']}"
+            )
+            await bot.send_message(admin_review_channel_id, text, reply_markup=review_question_keyboard(qid))
+        await state.clear()
+        await message.answer("سوال ثبت شد و بعد از تایید ادمین وارد بازی می‌شود.", reply_markup=main_menu(await db.is_admin(message.from_user.id)))
+    except Exception:
+        logger.exception("Submit save failed")
+        await message.answer("خطا در ثبت سوال.")
+
+
+@router.callback_query(F.data.startswith("qrev:"))
+async def q_review(call: CallbackQuery, db: Database, bot: Bot) -> None:
+    try:
+        if not await db.is_admin(call.from_user.id):
+            await call.answer("دسترسی ندارید.", show_alert=True); return
+        _, action, qid_s = call.data.split(":")
+        approve = action == 'approve'
+        q = await db.review_question(int(qid_s), call.from_user.id, approve)
+        if not q:
+            await call.answer("سوال قبلاً بررسی شده یا وجود ندارد.", show_alert=True); return
+        await db.log_admin(call.from_user.id, f"question_{action}", qid_s)
+        if q['submitted_by']:
+            await bot.send_message(q['submitted_by'], "✅ سوال پیشنهادی شما تایید شد." if approve else "❌ سوال پیشنهادی شما رد شد.")
+        await call.message.edit_reply_markup(reply_markup=None)
+        await call.answer("ثبت شد.")
+    except Exception:
+        logger.exception("Question review failed")
+        await call.answer("خطا", show_alert=True)
