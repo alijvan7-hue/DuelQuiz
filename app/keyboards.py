@@ -24,6 +24,12 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=CANCEL_TEXT)]], resize_keyboard=True)
 
 
+def back_home_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="↩️ بازگشت به منوی اصلی", callback_data="nav:home")
+    return b.as_markup()
+
+
 def duel_menu(random_cost: int = 5, friendly_cost: int = 20) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text=f"🎲 دوئل شانسی — {random_cost} سکه", callback_data="duel:random")

@@ -159,7 +159,18 @@ async def review_tx(call: CallbackQuery, db: Database, bot: Bot) -> None:
         if not tx:
             await call.answer("قبلاً بررسی شده یا پیدا نشد.", show_alert=True); return
         await db.log_admin(call.from_user.id, f"tx_{action}", str(tx_s))
-        await bot.send_message(tx['user_id'], "✅ خرید شما تایید و موجودی اضافه شد." if approve else "❌ رسید خرید شما رد شد.")
+        if approve:
+            updated_user = await db.get_user(tx['user_id'])
+            added_parts = []
+            if tx['coins']:
+                added_parts.append(f"{tx['coins']} سکه")
+            if tx['xp']:
+                added_parts.append(f"{tx['xp']} XP")
+            added_text = " + ".join(added_parts) or "بسته"
+            balance_text = f"موجودی فعلی: {updated_user['coins']} سکه | XP: {updated_user['xp']}" if updated_user else ""
+            await bot.send_message(tx['user_id'], f"✅ پرداخت تایید شد.\n{added_text} به حسابت اضافه شد.\n{balance_text}")
+        else:
+            await bot.send_message(tx['user_id'], "❌ رسید خرید شما رد شد.")
         await call.message.edit_reply_markup(reply_markup=None)
         await call.answer("ثبت شد.")
     except Exception:

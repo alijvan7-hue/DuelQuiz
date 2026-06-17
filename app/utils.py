@@ -65,6 +65,10 @@ def xp_progress_text(xp: int, current_level_required: int = 0, next_level_requir
     return f"{got}/{span}"
 
 
+def to_english_digits(value: object) -> str:
+    return str(value).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+
+
 def normalize_genre(value: str | None) -> str:
     raw = (value or "").strip()
     if not raw:

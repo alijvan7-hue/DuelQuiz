@@ -144,8 +144,14 @@ async def offer_genres(duel_id: int, db: Database, bot: Bot) -> None:
     offer_n = await db.get_int('genres_to_offer', 4)
     choose_n = await db.get_int('genres_to_choose', 2)
     if len(candidates) < offer_n:
-        await bot.send_message(duel['player1_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد.")
-        await bot.send_message(duel['player2_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد.")
+        await bot.send_message(duel['player1_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد؛ هزینه پرداخت‌شده برگردانده شد.")
+        await bot.send_message(duel['player2_id'], "ژانر/سوال فعال کافی برای شروع دوئل وجود ندارد؛ هزینه پرداخت‌شده برگردانده شد.")
+        if duel['invite_token']:
+            await db.change_coins(duel['player1_id'], await db.get_int('friendly_duel_cost', 20), 'duel_cancel_refund', duel_id)
+        else:
+            cost = await db.get_int('random_duel_cost', 5)
+            await db.change_coins(duel['player1_id'], cost, 'duel_cancel_refund', duel_id)
+            await db.change_coins(duel['player2_id'], cost, 'duel_cancel_refund', duel_id)
         await db.execute_write("UPDATE duels SET status='cancelled' WHERE id=?", (duel_id,))
         return
     genres = random.sample(candidates, offer_n)

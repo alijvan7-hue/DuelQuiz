@@ -62,23 +62,12 @@ async def send_streak_notification(bot: Bot, user_id: int, reward: dict | None) 
     if not reward:
         return
     try:
-        if reward["type"] == "weekly":
-            await bot.send_message(user_id, f"🎁 جایزه هفتگی گرفتی: <b>{reward['coins']} سکه</b>. موفق باشی!")
-            return
-        day = int(reward["day"])
-        if reward.get("reset"):
-            await bot.send_message(user_id, "😅 یه روز جا انداختی! streak از روز اول شروع شد.")
-        if day == 7:
-            msg = await bot.send_message(user_id, "🔥🔥 داری هفته اول رو کامل می‌کنی...")
-            await asyncio.sleep(0.8)
-            try:
-                await msg.edit_text("🎊 تقریباً رسیدی...")
-                await asyncio.sleep(0.8)
-                await msg.edit_text(f"🎊 هفته‌ی اول رو کامل کردی! <b>{reward['coins']} سکه + {reward['xp']} XP</b> جایزه گرفتی!")
-            except Exception:
-                logger.exception("Streak day 7 edit failed")
-                await bot.send_message(user_id, f"🎊 هفته‌ی اول رو کامل کردی! <b>{reward['coins']} سکه + {reward['xp']} XP</b> جایزه گرفتی!")
-        else:
-            await bot.send_message(user_id, f"🔥 روز {day} از ۷! <b>{reward['coins']} سکه</b> گرفتی. فردا هم بیا!")
+        day = int(reward.get("day", 0))
+        coins = int(reward.get("coins", 0))
+        balance = int(reward.get("balance", 0))
+        await bot.send_message(
+            user_id,
+            f"🎁 کمک روزانه روز {day}: <b>{coins} سکه</b> به حسابت اضافه شد.\nموجودی فعلی: <b>{balance} سکه</b>",
+        )
     except Exception:
-        logger.exception("Streak notification failed")
+        logger.exception("Daily aid notification failed")

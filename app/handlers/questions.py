@@ -31,35 +31,35 @@ async def submit_entry(message: Message, db: Database, state: FSMContext) -> Non
 async def q_text(message: Message, state: FSMContext) -> None:
     await state.update_data(text=message.text)
     await state.set_state(QuestionSubmit.option1)
-    await message.answer("گزینه ۱:")
+    await message.answer("گزینه 1:")
 
 
 @router.message(QuestionSubmit.option1, F.text)
 async def q_o1(message: Message, state: FSMContext) -> None:
     await state.update_data(option1=message.text)
     await state.set_state(QuestionSubmit.option2)
-    await message.answer("گزینه ۲:")
+    await message.answer("گزینه 2:")
 
 
 @router.message(QuestionSubmit.option2, F.text)
 async def q_o2(message: Message, state: FSMContext) -> None:
     await state.update_data(option2=message.text)
     await state.set_state(QuestionSubmit.option3)
-    await message.answer("گزینه ۳:")
+    await message.answer("گزینه 3:")
 
 
 @router.message(QuestionSubmit.option3, F.text)
 async def q_o3(message: Message, state: FSMContext) -> None:
     await state.update_data(option3=message.text)
     await state.set_state(QuestionSubmit.option4)
-    await message.answer("گزینه ۴:")
+    await message.answer("گزینه 4:")
 
 
 @router.message(QuestionSubmit.option4, F.text)
 async def q_o4(message: Message, state: FSMContext) -> None:
     await state.update_data(option4=message.text)
     await state.set_state(QuestionSubmit.correct)
-    await message.answer("شماره گزینه صحیح را بفرست (۱ تا ۴):")
+    await message.answer("شماره گزینه صحیح را بفرست (1 تا 4):")
 
 
 @router.message(QuestionSubmit.correct, F.text)
@@ -73,7 +73,7 @@ async def q_correct(message: Message, state: FSMContext, db: Database) -> None:
         genres = "، ".join(await db.all_genres())
         await message.answer(f"ژانر/دسته‌بندی سوال را بنویس. ژانرهای مجاز:\n{genres}", reply_markup=cancel_keyboard())
     except ValueError:
-        await message.answer("فقط عدد ۱ تا ۴ قابل قبول است.")
+        await message.answer("فقط عدد 1 تا 4 قابل قبول است.")
 
 
 @router.message(QuestionSubmit.genre, F.text)

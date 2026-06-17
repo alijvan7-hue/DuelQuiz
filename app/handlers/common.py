@@ -4,8 +4,8 @@ from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from app.db import Database
-from app.keyboards import main_menu, leaderboard_basis_keyboard, leaderboard_period_keyboard, CANCEL_TEXT
-from app.utils import ensure_user, xp_progress_text, rtl_line
+from app.keyboards import main_menu, leaderboard_basis_keyboard, leaderboard_period_keyboard, CANCEL_TEXT, back_home_keyboard
+from app.utils import ensure_user, xp_progress_text, rtl_line, to_english_digits
 from app.notifications import send_streak_notification
 from app.time_utils import jalali_date, jalali_datetime
 
@@ -29,14 +29,14 @@ async def start(message: Message, db: Database, state: FSMContext, bot: Bot, com
         streak_reward = await db.claim_streak_reward(message.from_user.id)
         if payload and payload.startswith('invite_'):
             if was_new and signup_gift > 0:
-                await message.answer(f"🎁 {signup_gift} سکه هدیه‌ی شروع به حسابت اضافه شد.")
+                await message.answer(f"🎁 {signup_gift}تا سکه برای شروع در اختیار شما قرار گرفت.")
             await send_streak_notification(bot, message.from_user.id, streak_reward)
             from app.handlers.duel import join_invite_from_start
             await join_invite_from_start(message, db, payload.removeprefix('invite_'))
             return
         welcome = await db.get_setting("welcome_text", "سلام! به ربات کوییز دوئلی خوش آمدی. از منوی پایین انتخاب کن:")
         if was_new and signup_gift > 0:
-            welcome += f"\n\n🎁 {signup_gift} سکه هدیه‌ی شروع به حسابت اضافه شد."
+            welcome += f"\n\n🎁 {signup_gift}تا سکه برای شروع در اختیار شما قرار گرفت."
         photo_id = await db.get_setting("start_photo_file_id", "")
         if photo_id:
             await message.answer_photo(photo_id, caption=welcome, reply_markup=main_menu(is_admin))
@@ -85,7 +85,6 @@ async def profile(message: Message, db: Database) -> None:
         username = f"@{u['username']}" if u['username'] else "—"
         joined = jalali_date(u['created_at'])
         last_duel = jalali_datetime(u['last_duel_at']) if 'last_duel_at' in u.keys() and u['last_duel_at'] else '—'
-        streak_line = await db.streak_status(message.from_user.id)
         xp_bar = xp_progress_text(u['xp'], cur, nxt)
         await message.answer(
             f"👤 <b>{u['first_name'] or 'کاربر'}</b>  {username}\n"
@@ -94,9 +93,8 @@ async def profile(message: Message, db: Database) -> None:
             f"🪙 سکه: <b>{u['coins']}</b>\n\n"
             f"⚔️ دوئل‌ها: {total_duels} | برد <b>{u['wins']}</b> / مساوی {u['draws']} / شکست <b>{u['losses']}</b>\n"
             f"✅ پاسخ صحیح: {u['correct_answers']} | ❌ غلط: {wrong}\n"
-            f"{streak_line}\n"
             f"📅 عضویت: {joined} | آخرین بازی: {last_duel}",
-            reply_markup=ReplyKeyboardRemove(),
+            reply_markup=back_home_keyboard(),
         )
     except Exception:
         logger.exception("Profile failed")
@@ -162,3 +160,4 @@ async def referral(message: Message, db: Database, bot_username: str) -> None:
 @router.message(F.text == "🏰 کلن (به‌زودی)")
 async def clan_placeholder(message: Message) -> None:
     await message.answer("🏰 قابلیت کلن به‌زودی اضافه می‌شود.", reply_markup=ReplyKeyboardRemove())
+    await message.answer("برای برگشت به منوی اصلی بزن:", reply_markup=back_home_keyboard())

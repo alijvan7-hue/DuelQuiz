@@ -14,7 +14,7 @@ from app.keyboards import (
     invalid_questions_confirm_keyboard, review_question_keyboard,
 )
 from app.states import AdminFlow, BulkQuestionImport, ShopPackageFlow, LeagueFlow, DiscountFlow, QuestionCleanupFlow
-from app.bulk_questions import parse_bulk_questions, format_bulk_report, bulk_help_text, extract_json_text, is_json_balanced, looks_like_json
+from app.bulk_questions import parse_bulk_questions, format_bulk_report, bulk_help_text, extract_json_text, is_json_balanced, looks_like_json, looks_like_bulk_text
 from app.time_utils import tehran_now, jalali_datetime
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ async def bulk_timeout_notice(state: FSMContext, bot: Bot, admin_id: int, stamp:
         data = await state.get_data()
         if data.get("bulk_updated_at") == stamp and data.get("bulk_chunks") is not None:
             await state.clear()
-            await bot.send_message(admin_id, "⏱ چون ۳۰ دقیقه پیامی نفرستادی، بافر Bulk پاک شد و حالت Bulk لغو شد.")
+            await bot.send_message(admin_id, "⏱ چون 30 دقیقه پیامی نفرستادی، بافر Bulk پاک شد و حالت Bulk لغو شد.")
     except asyncio.CancelledError:
         return
     except Exception:
@@ -149,7 +149,7 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
             try:
                 if (tehran_now() - datetime.fromisoformat(last_update)).total_seconds() > 1800:
                     await state.clear()
-                    await message.answer("⏱ بیش از ۳۰ دقیقه گذشت؛ بافر Bulk پاک شد و حالت Bulk لغو شد.", reply_markup=main_menu(True))
+                    await message.answer("⏱ بیش از 30 دقیقه گذشت؛ بافر Bulk پاک شد و حالت Bulk لغو شد.", reply_markup=main_menu(True))
                     return
             except Exception:
                 logger.exception("Bulk timeout check failed")
@@ -177,8 +177,8 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
             downloaded = await bot.download_file(file.file_path)
             payload = downloaded.read().decode("utf-8-sig")
         payload = extract_json_text(payload)
-        if not payload.strip() or (message.text and not looks_like_json(payload) and not chunks):
-            await message.answer("متن JSON یا فایل .json/.txt بفرست؛ بعد از اتمام /done را ارسال کن.")
+        if not payload.strip() or (message.text and not looks_like_json(payload) and not looks_like_bulk_text(payload) and not chunks):
+            await message.answer("متن JSON یا فرم متنی سوال‌ها را بفرست؛ بعد از اتمام /done را ارسال کن.")
             return
         chunks.append(payload)
         joined = "\n".join(chunks)
@@ -377,7 +377,7 @@ async def shop_pkg_amount(message: Message, state: FSMContext, db: Database) -> 
         if amount <= 0: raise ValueError
         await state.update_data(amount=amount)
         await state.set_state(ShopPackageFlow.price)
-        await message.answer("برچسب قیمت را وارد کنید؛ مثال: ۵۰٬۰۰۰ تومان", reply_markup=cancel_keyboard())
+        await message.answer("برچسب قیمت را وارد کنید؛ مثال: 50,000 تومان", reply_markup=cancel_keyboard())
     except ValueError:
         await message.answer("مقدار باید عدد مثبت باشد.")
 
@@ -450,7 +450,7 @@ async def league_callback(call: CallbackQuery, db: Database, state: FSMContext) 
                 await call.answer("لیگ پیدا نشد.", show_alert=True); return
             await call.message.answer(f"ویرایش لیگ #{lg['id']} — {lg['name']}", reply_markup=admin_league_edit_keyboard(lg['id']))
         elif action == "delete":
-            await call.answer("حذف لیگ مجاز نیست؛ ساختار ۴ لیگ × ۳ تیر + لیگ نهایی ثابت است.", show_alert=True)
+            await call.answer("حذف لیگ مجاز نیست؛ ساختار 4 لیگ × 3 تیر + لیگ نهایی ثابت است.", show_alert=True)
             return
         await call.answer()
     except Exception:
@@ -613,7 +613,7 @@ async def discount_value(message: Message, db: Database, state: FSMContext) -> N
         if value <= 0: raise ValueError
         data = await state.get_data()
         if data.get("kind") == "percent" and value > 100:
-            await message.answer("درصد باید بین ۱ تا ۱۰۰ باشد.")
+            await message.answer("درصد باید بین 1 تا 100 باشد.")
             return
         await state.update_data(value=value)
         await state.set_state(DiscountFlow.max_uses)
