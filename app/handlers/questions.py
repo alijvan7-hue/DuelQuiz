@@ -2,9 +2,10 @@ import logging
 from aiogram import Bot, Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
-from app.db import Database
+from app.db import Database, now_iso
 from app.keyboards import review_question_keyboard, cancel_keyboard, main_menu
 from app.states import QuestionSubmit
+from app.time_utils import jalali_datetime
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -83,7 +84,7 @@ async def q_genre(message: Message, db: Database, state: FSMContext, bot: Bot, a
         qid = await db.submit_question(message.from_user.id, d['text'], opts, d['correct'], message.text)
         if admin_review_channel_id:
             text = (
-                f"➕ سوال پیشنهادی #{qid}\nSubmitter: <code>{message.from_user.id}</code>\nGenre: {message.text}\n\n"
+                f"➕ سوال پیشنهادی #{qid}\nSubmitter: <code>{message.from_user.id}</code>\nGenre: {message.text}\nDate: {jalali_datetime(now_iso())}\n\n"
                 f"{d['text']}\n1) {opts[0]}\n2) {opts[1]}\n3) {opts[2]}\n4) {opts[3]}\nCorrect: {d['correct']}"
             )
             await bot.send_message(admin_review_channel_id, text, reply_markup=review_question_keyboard(qid))
@@ -96,6 +97,7 @@ async def q_genre(message: Message, db: Database, state: FSMContext, bot: Bot, a
 
 @router.callback_query(F.data.startswith("qrev:"))
 async def q_review(call: CallbackQuery, db: Database, bot: Bot) -> None:
+    logger.info("Question review callback received: data=%s from=%s chat=%s", call.data, call.from_user.id if call.from_user else None, call.message.chat.type if call.message else None)
     try:
         if not await db.is_admin(call.from_user.id):
             await call.answer("دسترسی ندارید.", show_alert=True); return

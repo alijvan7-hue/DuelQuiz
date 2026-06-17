@@ -13,6 +13,7 @@ from app.db import Database, now_iso
 from app.keyboards import duel_menu, genres_keyboard, question_keyboard, main_menu
 from app.utils import invite_token, options_from_question
 from app.states import ReportQuestion
+from app.notifications import send_duel_transition_notifications, send_streak_notification
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -41,8 +42,10 @@ async def duel_entry(message: Message, db: Database) -> None:
     if u['is_blocked']:
         await message.answer("حساب شما مسدود است.")
         return
+    random_cost = await db.get_int('random_duel_cost', 5)
+    friendly_cost = await db.get_int('friendly_duel_cost', 20)
     await message.answer("دوئل:", reply_markup=ReplyKeyboardRemove())
-    await message.answer("نوع دوئل را انتخاب کن:", reply_markup=duel_menu())
+    await message.answer("نوع دوئل را انتخاب کن:", reply_markup=duel_menu(random_cost, friendly_cost))
 
 
 @router.callback_query(F.data == "duel:random")
@@ -308,6 +311,10 @@ async def finish_and_notify(duel_id: int, db: Database, bot: Bot) -> None:
         else:
             line = "شما بازنده شدید."
         await bot.send_message(uid, f"🏁 دوئل تمام شد.\n{line}\n\nامتیاز شما: {stats[uid]['correct']} پاسخ صحیح\nامتیاز حریف: {stats[duel['player1_id' if uid==duel['player2_id'] else 'player2_id']]['correct']} پاسخ صحیح", reply_markup=main_menu(await db.is_admin(uid)))
+    for uid in [duel['player1_id'], duel['player2_id']]:
+        await send_duel_transition_notifications(bot, db, uid, result.get('transitions', {}).get(uid, {}))
+        reward = await db.claim_streak_reward(uid)
+        await send_streak_notification(bot, uid, reward)
     runtimes.pop(duel_id, None)
 
 

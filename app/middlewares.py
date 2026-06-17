@@ -27,8 +27,11 @@ class AccessGuardMiddleware(BaseMiddleware):
                         await event.answer("شما در حال بازی هستید؛ لطفاً ابتدا دوئل را تمام کنید.")
                         return None
             elif isinstance(event, CallbackQuery):
+                logger.info("Callback received: data=%s from=%s chat_type=%s", event.data, event.from_user.id if event.from_user else None, event.message.chat.type if event.message else None)
                 if event.message and event.message.chat.type != "private":
-                    return None
+                    allowed_prefixes = ("tx:", "qrev:")
+                    if not (event.data or "").startswith(allowed_prefixes):
+                        return None
                 if db and event.from_user and await db.get_int("maintenance_mode", 0) == 1 and not await db.is_admin(event.from_user.id):
                     await event.answer(await db.get_setting("maintenance_text", "بات موقتاً در حال تعمیر است."), show_alert=True)
                     return None

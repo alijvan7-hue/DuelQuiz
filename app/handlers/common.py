@@ -1,33 +1,48 @@
 import logging
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from app.db import Database
 from app.keyboards import main_menu, leaderboard_basis_keyboard, leaderboard_period_keyboard, CANCEL_TEXT
 from app.utils import ensure_user, xp_progress_text, rtl_line
+from app.notifications import send_streak_notification
+from app.time_utils import jalali_date, jalali_datetime
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 @router.message(CommandStart())
-async def start(message: Message, db: Database, state: FSMContext, command: CommandObject | None = None) -> None:
+async def start(message: Message, db: Database, state: FSMContext, bot: Bot, command: CommandObject | None = None) -> None:
     await state.clear()
     payload = command.args if command else None
     try:
+        was_new = await db.get_user(message.from_user.id) is None
         await ensure_user(db, message.from_user, payload)
         is_admin = await db.is_admin(message.from_user.id)
+        signup_gift = 0
+        if was_new:
+            signup_gift = await db.get_int("initial_signup_coins", 50)
+            if signup_gift > 0:
+                await db.change_coins(message.from_user.id, signup_gift, "initial_signup")
+        streak_reward = await db.claim_streak_reward(message.from_user.id)
         if payload and payload.startswith('invite_'):
+            if was_new and signup_gift > 0:
+                await message.answer(f"🎁 {signup_gift} سکه هدیه‌ی شروع به حسابت اضافه شد.")
+            await send_streak_notification(bot, message.from_user.id, streak_reward)
             from app.handlers.duel import join_invite_from_start
             await join_invite_from_start(message, db, payload.removeprefix('invite_'))
             return
         welcome = await db.get_setting("welcome_text", "سلام! به ربات کوییز دوئلی خوش آمدی. از منوی پایین انتخاب کن:")
+        if was_new and signup_gift > 0:
+            welcome += f"\n\n🎁 {signup_gift} سکه هدیه‌ی شروع به حسابت اضافه شد."
         photo_id = await db.get_setting("start_photo_file_id", "")
         if photo_id:
             await message.answer_photo(photo_id, caption=welcome, reply_markup=main_menu(is_admin))
         else:
             await message.answer(welcome, reply_markup=main_menu(is_admin))
+        await send_streak_notification(bot, message.from_user.id, streak_reward)
     except Exception:
         logger.exception("Start failed")
         await message.answer("خطایی رخ داد. لطفاً دوباره تلاش کن.")
@@ -36,7 +51,7 @@ async def start(message: Message, db: Database, state: FSMContext, command: Comm
 @router.message(Command("help"))
 async def help_command(message: Message, db: Database) -> None:
     try:
-        await message.answer(await db.get_setting("help_text", "راهنما فعلاً تنظیم نشده است."), reply_markup=ReplyKeyboardRemove())
+        await message.answer(await db.render_help_text(), reply_markup=ReplyKeyboardRemove())
     except Exception:
         logger.exception("Help failed")
         await message.answer("خطا در نمایش راهنما.")
@@ -68,7 +83,9 @@ async def profile(message: Message, db: Database) -> None:
         total_duels = int(u['wins']) + int(u['losses']) + int(u['draws'])
         wrong = max(0, int(u['total_answers']) - int(u['correct_answers']))
         username = f"@{u['username']}" if u['username'] else "—"
-        joined = str(u['created_at']).split('T')[0]
+        joined = jalali_date(u['created_at'])
+        last_duel = jalali_datetime(u['last_duel_at']) if 'last_duel_at' in u.keys() and u['last_duel_at'] else '—'
+        streak_line = await db.streak_status(message.from_user.id)
         xp_bar = xp_progress_text(u['xp'], cur, nxt)
         await message.answer(
             f"👤 <b>{u['first_name'] or 'کاربر'}</b>  {username}\n"
@@ -77,7 +94,8 @@ async def profile(message: Message, db: Database) -> None:
             f"🪙 سکه: <b>{u['coins']}</b>\n\n"
             f"⚔️ دوئل‌ها: {total_duels} | برد <b>{u['wins']}</b> / مساوی {u['draws']} / شکست <b>{u['losses']}</b>\n"
             f"✅ پاسخ صحیح: {u['correct_answers']} | ❌ غلط: {wrong}\n"
-            f"📅 عضویت: {joined}",
+            f"{streak_line}\n"
+            f"📅 عضویت: {joined} | آخرین بازی: {last_duel}",
             reply_markup=ReplyKeyboardRemove(),
         )
     except Exception:
@@ -129,10 +147,14 @@ async def leaderboard_callback(call: CallbackQuery, db: Database) -> None:
 async def referral(message: Message, db: Database, bot_username: str) -> None:
     await db.upsert_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     link = f"https://t.me/{bot_username}?start=ref_{message.from_user.id}"
+    rc = await db.get_int("referral_referrer_coins", 50)
+    rx = await db.get_int("referral_referrer_xp", 50)
+    nc = await db.get_int("referral_referred_coins", 25)
+    nx = await db.get_int("referral_referred_xp", 25)
     await message.answer(
         "🎁 لینک دعوت اختصاصی شما:\n"
         f"{link}\n\n"
-        "وقتی دوستت با این لینک وارد شود و حداقل یک دوئل بازی کند، پاداش برای هر دو نفر فعال می‌شود.",
+        f"اگر دوستت با لینک تو وارد بشه و اولین دوئلش رو بازی کنه، تو <b>{rc} سکه و {rx} XP</b> می‌گیری، اون هم <b>{nc} سکه و {nx} XP</b> هدیه می‌گیره.",
         reply_markup=ReplyKeyboardRemove(),
     )
 

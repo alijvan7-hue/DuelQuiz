@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import aiosqlite
+from app.time_utils import tehran_now, tehran_date_key, jalali_week_start_key, jalali_date_diff_days, tehran_days_between
 
 logger = logging.getLogger(__name__)
 UTC = timezone.utc
@@ -291,6 +292,10 @@ class Database:
 
     async def migrate_existing_schema(self) -> None:
         await self.add_column_if_missing("users", "cups", "cups INTEGER NOT NULL DEFAULT 0")
+        await self.add_column_if_missing("users", "streak_day", "streak_day INTEGER NOT NULL DEFAULT 0")
+        await self.add_column_if_missing("users", "streak_last_claim", "streak_last_claim TEXT")
+        await self.add_column_if_missing("users", "streak_week_start", "streak_week_start TEXT")
+        await self.add_column_if_missing("users", "last_duel_at", "last_duel_at TEXT")
         await self.add_column_if_missing("questions", "added_by", "added_by INTEGER")
         await self.add_column_if_missing("questions", "approved", "approved INTEGER NOT NULL DEFAULT 0")
         await self.add_column_if_missing("questions", "approved_by", "approved_by INTEGER")
@@ -331,7 +336,7 @@ class Database:
             "referral_referred_xp": ("25", "New user XP reward"),
             "payment_card_number": ("0000-0000-0000-0000", "Shown in shop payment page"),
             "welcome_text": ("سلام! به ربات کوییز دوئلی خوش آمدی. از منوی پایین انتخاب کن:", "Editable /start welcome text"),
-            "help_text": ("راهنما:\n⚔️ دوئل: بازی رقابتی\n🛒 فروشگاه: خرید سکه یا XP\n➕ ثبت سوال: پیشنهاد سوال جدید\n/cancel برای لغو عملیات", "Editable /help text"),
+            "help_text": ("🎮 راهنمای کامل ربات کوییز دوئلی\n\n━━━━━━━━━━━━━━━\n🕹 بازی\n━━━━━━━━━━━━━━━\n🎲 دوئل شانسی — با یه حریف تصادفی بازی کن (هزینه: {random_duel_cost} سکه)\n🤝 دعوت دوست — لینک دوئل بفرست برای دوستت (هزینه: {friendly_duel_cost} سکه)\nقبل از شروع هر دوئل، ژانر سوالات رو انتخاب می‌کنید. سوالات فقط از ژانرهایی میان که هر دو نفر انتخاب کردن.\n\n━━━━━━━━━━━━━━━\n🏆 رقابت\n━━━━━━━━━━━━━━━\nبا هر برد جام و XP می‌گیری و توی لیگ بالا می‌ری.\nلیگ‌ها: برنزی ← نقره‌ای ← طلایی ← الماسی ← اسطوره‌ای\nهر لیگ ۳ تیر داره. هرچی لیگ بالاتر، باخت گرون‌تره!\n\n━━━━━━━━━━━━━━━\n🪙 سکه\n━━━━━━━━━━━━━━━\nبا بازی و برد سکه می‌گیری.\nتوی دوئل می‌تونی از پاورآپ استفاده کنی (با سکه).\nاز فروشگاه هم می‌تونی سکه بخری.\n{initial_signup_coins} سکه هدیه‌ی شروع برای همه!\n\n━━━━━━━━━━━━━━━\n🔥 Streak روزانه\n━━━━━━━━━━━━━━━\n۷ روز اول که وارد بشی یا بازی کنی، هر روز سکه می‌گیری.\nروز اول: {streak_day_1_coins} سکه | روز ۷: {streak_day_7_coins} سکه + {streak_day_7_xp} XP\nاگه یه روز جا بندازی، از اول شروع میشه!\nبعد از هفته‌ی اول، هر شنبه یه جایزه‌ی ثابت داری.\n\n━━━━━━━━━━━━━━━\n👥 رفرال\n━━━━━━━━━━━━━━━\nلینک دعوتت رو از پروفایلت بگیر.\nهر دوستی که با لینک تو بیاد و اولین دوئلش رو بازی کنه:\n• تو: {referral_referrer_coins} سکه + {referral_referrer_xp} XP\n• اون: {referral_referred_coins} سکه + {referral_referred_xp} XP هدیه\n\n━━━━━━━━━━━━━━━\n📋 سوال بده\n━━━━━━━━━━━━━━━\nمی‌تونی سوال جدید پیشنهاد بدی. بعد از تایید ادمین وارد بازی میشه.", "Editable /help text with placeholders"),
             "max_level": ("100", "Maximum level"),
             "xp_level_curve_factor": ("112", "Quadratic XP curve factor; cumulative XP for level L is factor*(L-1)^2"),
             "start_photo_file_id": ("", "Optional photo file_id for /start"),
@@ -341,9 +346,22 @@ class Database:
             "maintenance_mode": ("0", "1 disables bot for non-admin users"),
             "maintenance_text": ("بات موقتاً در حال تعمیر است. لطفاً بعداً دوباره تلاش کنید.", "Shown during maintenance"),
             "payment_method": ("card_to_card", "Active payment method adapter"),
+            "initial_signup_coins": ("50", "Coins granted on first /start"),
+            "streak_day_1_coins": ("10", "First-week streak day 1 coins"),
+            "streak_day_2_coins": ("15", "First-week streak day 2 coins"),
+            "streak_day_3_coins": ("20", "First-week streak day 3 coins"),
+            "streak_day_4_coins": ("25", "First-week streak day 4 coins"),
+            "streak_day_5_coins": ("30", "First-week streak day 5 coins"),
+            "streak_day_6_coins": ("40", "First-week streak day 6 coins"),
+            "streak_day_7_coins": ("50", "First-week streak day 7 coins"),
+            "streak_day_7_xp": ("100", "First-week streak day 7 XP"),
+            "weekly_reward_coins": ("20", "Weekly reward coins after first week"),
         }
         for k, (v, d) in defaults.items():
             await self.execute_write("INSERT OR IGNORE INTO settings(key,value,description) VALUES(?,?,?)", (k, v, d))
+        old_help = await self.get_setting("help_text", "")
+        if old_help.startswith("راهنما:\n⚔️ دوئل"):
+            await self.set_setting("help_text", defaults["help_text"][0])
         ranks = [(1, "تازه‌کار"), (5, "دانشجو"), (10, "استاد"), (20, "قهرمان"), (35, "اسطوره"), (70, "افسانه‌ای"), (100, "مکس لول")]
         for min_level, title in ranks:
             await self.execute_write("INSERT OR IGNORE INTO ranks(min_level,title) VALUES(?,?)", (min_level, title))
@@ -411,6 +429,21 @@ class Database:
 
     async def all_settings(self) -> list[aiosqlite.Row]:
         return await self.fetchall("SELECT key,value,description FROM settings ORDER BY key")
+
+    async def render_help_text(self) -> str:
+        text = await self.get_setting("help_text", "")
+        keys = [
+            "random_duel_cost", "friendly_duel_cost", "initial_signup_coins",
+            "streak_day_1_coins", "streak_day_7_coins", "streak_day_7_xp",
+            "referral_referrer_coins", "referral_referrer_xp",
+            "referral_referred_coins", "referral_referred_xp",
+        ]
+        values = {k: await self.get_setting(k, "0") for k in keys}
+        try:
+            return text.format(**values)
+        except Exception:
+            logger.exception("Help text format failed")
+            return text
 
     async def upsert_user(self, tg_id: int, username: str | None, first_name: str | None, referred_by_tg: int | None = None) -> aiosqlite.Row:
         ts = now_iso()
@@ -492,6 +525,57 @@ class Database:
     async def change_cups(self, tg_id: int, amount: int, reason: str, duel_id: int | None = None, league_id: int | None = None) -> None:
         await self.execute_write("UPDATE users SET cups=MAX(0, cups + ?), updated_at=? WHERE telegram_id=?", (amount, now_iso(), tg_id))
         await self.execute_write("INSERT INTO cup_events(user_id,amount,reason,duel_id,league_id,created_at) VALUES(?,?,?,?,?,?)", (tg_id, amount, reason, duel_id, league_id, now_iso()))
+
+    async def claim_streak_reward(self, tg_id: int) -> dict[str, Any] | None:
+        user = await self.get_user(tg_id)
+        if not user:
+            return None
+        now = tehran_now()
+        now_iso_value = now.astimezone(UTC).isoformat(timespec="seconds")
+        week_start = user["streak_week_start"]
+        if not week_start:
+            week_start = now_iso_value
+            await self.execute_write("UPDATE users SET streak_week_start=? WHERE telegram_id=?", (week_start, tg_id))
+        first_week_days = tehran_days_between(week_start, now)
+        last_claim = user["streak_last_claim"]
+        last_diff = jalali_date_diff_days(last_claim, now)
+        streak_day = int(user["streak_day"] or 0)
+        if first_week_days is not None and first_week_days < 7 and streak_day < 7:
+            if last_diff == 0:
+                return None
+            reset = False
+            if last_diff == 1:
+                new_day = min(7, streak_day + 1 if streak_day else 1)
+            else:
+                new_day = 1
+                reset = streak_day > 0 and last_claim is not None
+            coins = await self.get_int(f"streak_day_{new_day}_coins", 10)
+            xp = await self.get_int("streak_day_7_xp", 100) if new_day == 7 else 0
+            if coins:
+                await self.change_coins(tg_id, coins, "streak_daily")
+            if xp:
+                await self.change_xp(tg_id, xp, "streak_daily")
+            await self.execute_write("UPDATE users SET streak_day=?, streak_last_claim=? WHERE telegram_id=?", (new_day, now_iso_value, tg_id))
+            return {"type": "daily", "day": new_day, "coins": coins, "xp": xp, "reset": reset}
+        current_week = jalali_week_start_key(now)
+        if last_claim and jalali_week_start_key(last_claim) == current_week:
+            return None
+        coins = await self.get_int("weekly_reward_coins", 20)
+        if coins:
+            await self.change_coins(tg_id, coins, "streak_weekly")
+        await self.execute_write("UPDATE users SET streak_last_claim=?, streak_day=7 WHERE telegram_id=?", (now_iso_value, tg_id))
+        return {"type": "weekly", "coins": coins, "xp": 0, "week": current_week}
+
+    async def streak_status(self, tg_id: int) -> str:
+        user = await self.get_user(tg_id)
+        if not user:
+            return "🔥 Streak: —"
+        first_week_days = tehran_days_between(user["streak_week_start"], tehran_now()) if user["streak_week_start"] else 0
+        if first_week_days is not None and first_week_days < 7 and int(user["streak_day"] or 0) < 7:
+            return f"🔥 Streak: روز {int(user['streak_day'] or 0)}/۷"
+        last = user["streak_last_claim"]
+        received = bool(last and jalali_week_start_key(last) == jalali_week_start_key())
+        return "📅 جایزه‌ی هفتگی: " + ("دریافت‌شده ✅" if received else "در دسترس 🎁")
 
     async def create_waiting_duel(self, player_id: int) -> int:
         cur = await self.execute_write("INSERT INTO duels(player1_id,status,created_at) VALUES(?,?,?)", (player_id, "waiting", now_iso()))
@@ -609,6 +693,11 @@ class Database:
         for p in [duel["player1_id"], duel["player2_id"]]:
             stats.setdefault(p, {"correct": 0, "speed": 999999999})
         p1, p2 = duel["player1_id"], duel["player2_id"]
+        before: dict[int, dict[str, Any]] = {}
+        for uid in [p1, p2]:
+            u = await self.get_user(uid)
+            lg = await self.get_user_league(int(u["cups"] if u else 0))
+            before[uid] = {"level": int(u["level"] if u else 1), "cups": int(u["cups"] if u else 0), "league_id": lg["id"] if lg else None, "league_name": lg["name"] if lg else "بدون لیگ", "league_order": int(lg["sort_order"] if lg else 0)}
         winner = None
         if (stats[p1]["correct"], -stats[p1]["speed"]) > (stats[p2]["correct"], -stats[p2]["speed"]):
             winner = p1
@@ -628,15 +717,27 @@ class Database:
                 await self.change_xp(uid, bonus, "winner_bonus", duel_id)
                 if league:
                     await self.change_cups(uid, int(league["win_cups"]), "duel_win", duel_id, league["id"])
-                await self.execute_write("UPDATE users SET wins=wins+1 WHERE telegram_id=?", (uid,))
+                await self.execute_write("UPDATE users SET wins=wins+1, last_duel_at=? WHERE telegram_id=?", (now_iso(), uid))
             elif winner is None:
-                await self.execute_write("UPDATE users SET draws=draws+1 WHERE telegram_id=?", (uid,))
+                await self.execute_write("UPDATE users SET draws=draws+1, last_duel_at=? WHERE telegram_id=?", (now_iso(), uid))
             else:
                 if league:
                     await self.change_cups(uid, int(league["loss_cups"]), "duel_loss", duel_id, league["id"])
-                await self.execute_write("UPDATE users SET losses=losses+1 WHERE telegram_id=?", (uid,))
+                await self.execute_write("UPDATE users SET losses=losses+1, last_duel_at=? WHERE telegram_id=?", (now_iso(), uid))
+        transitions: dict[int, dict[str, Any]] = {}
+        for uid in [p1, p2]:
+            u = await self.get_user(uid)
+            lg = await self.get_user_league(int(u["cups"] if u else 0))
+            after = {"level": int(u["level"] if u else 1), "cups": int(u["cups"] if u else 0), "league_id": lg["id"] if lg else None, "league_name": lg["name"] if lg else "بدون لیگ", "league_order": int(lg["sort_order"] if lg else 0)}
+            transitions[uid] = {
+                "before": before[uid],
+                "after": after,
+                "level_up": after["level"] > before[uid]["level"],
+                "league_promoted": after["league_order"] > before[uid]["league_order"],
+                "league_demoted": after["league_order"] < before[uid]["league_order"],
+            }
         await self.activate_referrals_for_players([p1, p2])
-        return {"winner": winner, "stats": stats}
+        return {"winner": winner, "stats": stats, "transitions": transitions}
 
     async def activate_referrals_for_players(self, players: list[int]) -> None:
         for uid in players:

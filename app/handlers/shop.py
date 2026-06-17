@@ -9,6 +9,7 @@ from app.keyboards import (
 )
 from app.states import ShopReceipt
 from app.payments import get_payment_provider
+from app.time_utils import jalali_datetime
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -133,7 +134,7 @@ async def receive_receipt(message: Message, db: Database, state: FSMContext, bot
                 f"🧾 رسید خرید #{tx_id}\nUser: <code>{tx['user_id']}</code>\n"
                 f"Package: {tx['title']}\nCoins: {tx['coins']} | XP: {tx['xp']}\n"
                 f"Original: {tx['original_price_label'] or tx['price_label']}\nFinal: {tx['final_price_label'] or tx['price_label']}\n"
-                f"Discount ID: {tx['discount_code_id'] or '-'}\nText: {text or '-'}"
+                f"Discount ID: {tx['discount_code_id'] or '-'}\nDate: {jalali_datetime(tx['created_at'])}\nText: {text or '-'}"
             )
             if rtype == 'photo' and file_id:
                 await bot.send_photo(admin_review_channel_id, file_id, caption=caption, reply_markup=review_tx_keyboard(tx_id))
@@ -148,6 +149,7 @@ async def receive_receipt(message: Message, db: Database, state: FSMContext, bot
 
 @router.callback_query(F.data.startswith("tx:"))
 async def review_tx(call: CallbackQuery, db: Database, bot: Bot) -> None:
+    logger.info("TX review callback received: data=%s from=%s chat=%s", call.data, call.from_user.id if call.from_user else None, call.message.chat.type if call.message else None)
     try:
         if not await db.is_admin(call.from_user.id):
             await call.answer("دسترسی ندارید.", show_alert=True); return

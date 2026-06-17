@@ -1,4 +1,6 @@
+import asyncio
 import logging
+from datetime import datetime
 from aiogram import Bot, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, FSInputFile, ReplyKeyboardRemove
@@ -12,10 +14,24 @@ from app.keyboards import (
     invalid_questions_confirm_keyboard, review_question_keyboard,
 )
 from app.states import AdminFlow, BulkQuestionImport, ShopPackageFlow, LeagueFlow, DiscountFlow, QuestionCleanupFlow
-from app.bulk_questions import parse_bulk_questions, format_bulk_report, bulk_help_text
+from app.bulk_questions import parse_bulk_questions, format_bulk_report, bulk_help_text, extract_json_text, is_json_balanced, looks_like_json
+from app.time_utils import tehran_now, jalali_datetime
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def bulk_timeout_notice(state: FSMContext, bot: Bot, admin_id: int, stamp: str) -> None:
+    try:
+        await asyncio.sleep(1800)
+        data = await state.get_data()
+        if data.get("bulk_updated_at") == stamp and data.get("bulk_chunks") is not None:
+            await state.clear()
+            await bot.send_message(admin_id, "⏱ چون ۳۰ دقیقه پیامی نفرستادی، بافر Bulk پاک شد و حالت Bulk لغو شد.")
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Bulk timeout notice failed")
 
 
 async def require_admin_message(message: Message, db: Database) -> bool:
@@ -60,7 +76,7 @@ async def backup_command(message: Message, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("admin:"))
-async def admin_callback(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+async def admin_callback(call: CallbackQuery, db: Database, state: FSMContext, bot: Bot) -> None:
     try:
         if not await require_admin_call(call, db):
             return
@@ -86,7 +102,9 @@ async def admin_callback(call: CallbackQuery, db: Database, state: FSMContext) -
             await db.log_admin(call.from_user.id, "backup")
         elif action == 'bulk_questions':
             await state.set_state(BulkQuestionImport.waiting_json)
-            await state.update_data(bulk_chunks=[])
+            stamp = tehran_now().isoformat()
+            await state.update_data(bulk_chunks=[], bulk_updated_at=stamp)
+            asyncio.create_task(bulk_timeout_notice(state, bot, call.from_user.id, stamp))
             await call.message.answer(bulk_help_text(await db.all_genres()), reply_markup=cancel_keyboard())
         elif action == 'shop_manage':
             await call.message.answer("کدام بخش فروشگاه مدیریت شود؟", reply_markup=admin_shop_types_keyboard())
@@ -126,6 +144,15 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
         if not await require_admin_message(message, db):
             return
         data_state = await state.get_data()
+        last_update = data_state.get("bulk_updated_at")
+        if last_update:
+            try:
+                if (tehran_now() - datetime.fromisoformat(last_update)).total_seconds() > 1800:
+                    await state.clear()
+                    await message.answer("⏱ بیش از ۳۰ دقیقه گذشت؛ بافر Bulk پاک شد و حالت Bulk لغو شد.", reply_markup=main_menu(True))
+                    return
+            except Exception:
+                logger.exception("Bulk timeout check failed")
         chunks = list(data_state.get("bulk_chunks", []))
         if message.text and message.text.strip() == "/done":
             payload = "\n".join(chunks).strip()
@@ -149,12 +176,19 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
             file = await bot.get_file(message.document.file_id)
             downloaded = await bot.download_file(file.file_path)
             payload = downloaded.read().decode("utf-8-sig")
-        if not payload.strip():
+        payload = extract_json_text(payload)
+        if not payload.strip() or (message.text and not looks_like_json(payload) and not chunks):
             await message.answer("متن JSON یا فایل .json/.txt بفرست؛ بعد از اتمام /done را ارسال کن.")
             return
         chunks.append(payload)
-        await state.update_data(bulk_chunks=chunks)
-        await message.answer(f"✅ بخش {len(chunks)} دریافت شد. اگر تمام شد /done را بفرست؛ در غیر این صورت بخش بعدی را ارسال کن.")
+        joined = "\n".join(chunks)
+        new_stamp = tehran_now().isoformat()
+        await state.update_data(bulk_chunks=chunks, bulk_updated_at=new_stamp)
+        asyncio.create_task(bulk_timeout_notice(state, bot, message.from_user.id, new_stamp))
+        if not is_json_balanced(joined):
+            await message.answer("⏳ ادامه رو بفرست... (یا /done برای پایان)")
+        else:
+            await message.answer(f"✅ بخش {len(chunks)} دریافت شد و JSON متوازن به نظر می‌رسد. اگر تمام شد /done را بفرست؛ در غیر این صورت بخش بعدی را ارسال کن.")
     except UnicodeDecodeError:
         logger.exception("Bulk file encoding failed")
         await message.answer("فایل باید UTF-8 باشد.")
@@ -629,7 +663,7 @@ async def question_admin_callback(call: CallbackQuery, db: Database) -> None:
             q = await db.get_question(int(parts[2]))
             if not q:
                 await call.answer("سوال پیدا نشد.", show_alert=True); return
-            text = f"سوال #{q['id']}\nژانر: {q['genre']}\n\n{q['text']}\n1) {q['option1']}\n2) {q['option2']}\n3) {q['option3']}\n4) {q['option4']}\nCorrect: {q['correct_option']}"
+            text = f"سوال #{q['id']}\nژانر: {q['genre']}\nتاریخ ثبت: {jalali_datetime(q['created_at'])}\n\n{q['text']}\n1) {q['option1']}\n2) {q['option2']}\n3) {q['option3']}\n4) {q['option4']}\nCorrect: {q['correct_option']}"
             await call.message.answer(text, reply_markup=review_question_keyboard(q['id']))
         await call.answer()
     except Exception:

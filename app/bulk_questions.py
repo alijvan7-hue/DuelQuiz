@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 from app.utils import CANONICAL_GENRES
 
@@ -13,6 +14,48 @@ GENRE_KEYS = ("category", "genre", "cat", "subject", "topic")
 CORRECT_KEYS = ("correct", "answer", "right", "correct_option", "correctAnswer")
 OPTIONS_KEYS = ("options", "choices", "answers")
 IGNORED_KEYS = {"added_by", "approved", "approved_by", "created_at"}
+
+
+def extract_json_text(text: str) -> str:
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text or "")
+    if match:
+        return match.group(1).strip()
+    return (text or "").strip()
+
+
+def looks_like_json(text: str) -> bool:
+    stripped = extract_json_text(text).lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
+def is_json_balanced(text: str) -> bool:
+    text = extract_json_text(text)
+    braces = brackets = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            braces += 1
+        elif ch == "}":
+            braces -= 1
+        elif ch == "[":
+            brackets += 1
+        elif ch == "]":
+            brackets -= 1
+        if braces < 0 or brackets < 0:
+            return False
+    return braces == 0 and brackets == 0 and not in_string
 
 
 def bulk_help_text(genres: list[str] | None = None) -> str:
@@ -91,6 +134,7 @@ def parse_bulk_questions(payload: str, valid_genres: list[str] | None = None) ->
     accepted: list[dict[str, Any]] = []
     rejected: list[str] = []
     try:
+        payload = extract_json_text(payload)
         data = json.loads(payload)
     except json.JSONDecodeError as exc:
         logger.exception("Bulk JSON parse failed")

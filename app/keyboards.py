@@ -24,10 +24,10 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=CANCEL_TEXT)]], resize_keyboard=True)
 
 
-def duel_menu() -> InlineKeyboardMarkup:
+def duel_menu(random_cost: int = 5, friendly_cost: int = 20) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🎲 حریف تصادفی", callback_data="duel:random")
-    b.button(text="🔗 دعوت دوست", callback_data="duel:invite")
+    b.button(text=f"🎲 دوئل شانسی — {random_cost} سکه", callback_data="duel:random")
+    b.button(text=f"🤝 دعوت دوست — {friendly_cost} سکه", callback_data="duel:invite")
     b.button(text="↩️ برگشت", callback_data="nav:home")
     b.adjust(1)
     return b.as_markup()
