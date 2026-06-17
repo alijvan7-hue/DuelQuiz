@@ -260,6 +260,18 @@ class Database:
                 league_id INTEGER,
                 created_at TEXT NOT NULL
             )""",
+            """CREATE TABLE IF NOT EXISTS discount_codes(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                discount_type TEXT NOT NULL CHECK(discount_type IN ('percent','fixed')),
+                value INTEGER NOT NULL,
+                max_uses INTEGER,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
         ]
         async with self._write_lock:
             for sql in statements:
@@ -283,7 +295,19 @@ class Database:
         await self.add_column_if_missing("questions", "approved", "approved INTEGER NOT NULL DEFAULT 0")
         await self.add_column_if_missing("questions", "approved_by", "approved_by INTEGER")
         await self.add_column_if_missing("shop_packages", "package_type", "package_type TEXT NOT NULL DEFAULT 'coins'")
+        await self.add_column_if_missing("shop_packages", "price_amount", "price_amount INTEGER NOT NULL DEFAULT 0")
+        await self.add_column_if_missing("shop_transactions", "discount_code_id", "discount_code_id INTEGER")
+        await self.add_column_if_missing("shop_transactions", "original_price_label", "original_price_label TEXT")
+        await self.add_column_if_missing("shop_transactions", "final_price_label", "final_price_label TEXT")
+        await self.add_column_if_missing("shop_transactions", "payment_method", "payment_method TEXT NOT NULL DEFAULT 'card_to_card'")
+        await self.add_column_if_missing("leagues", "main_league", "main_league TEXT")
+        await self.add_column_if_missing("leagues", "tier", "tier INTEGER")
+        await self.add_column_if_missing("leagues", "is_final", "is_final INTEGER NOT NULL DEFAULT 0")
         await self.execute_write("UPDATE shop_packages SET package_type=CASE WHEN xp>0 AND coins=0 THEN 'xp' ELSE 'coins' END WHERE package_type IS NULL OR package_type='' OR package_type='coins'")
+        for pkg in await self.fetchall("SELECT id,price_label FROM shop_packages WHERE price_amount=0"):
+            amount = self.parse_price_amount(pkg["price_label"])
+            if amount:
+                await self.execute_write("UPDATE shop_packages SET price_amount=? WHERE id=?", (amount, pkg["id"]))
         await self.execute_write("UPDATE questions SET approved=1, approved_by=reviewed_by WHERE status='active' AND approved=0")
         for old_genre, new_genre in GENRE_ALIASES.items():
             await self.execute_write("UPDATE questions SET genre=? WHERE genre=?", (new_genre, old_genre))
@@ -310,6 +334,13 @@ class Database:
             "help_text": ("راهنما:\n⚔️ دوئل: بازی رقابتی\n🛒 فروشگاه: خرید سکه یا XP\n➕ ثبت سوال: پیشنهاد سوال جدید\n/cancel برای لغو عملیات", "Editable /help text"),
             "max_level": ("100", "Maximum level"),
             "xp_level_curve_factor": ("112", "Quadratic XP curve factor; cumulative XP for level L is factor*(L-1)^2"),
+            "start_photo_file_id": ("", "Optional photo file_id for /start"),
+            "random_duel_cost": ("5", "Coins charged for random matchmaking entry"),
+            "friendly_duel_cost": ("20", "Coins charged from invite duel creator"),
+            "matchmaking_timeout_seconds": ("120", "Random matchmaking timeout seconds"),
+            "maintenance_mode": ("0", "1 disables bot for non-admin users"),
+            "maintenance_text": ("بات موقتاً در حال تعمیر است. لطفاً بعداً دوباره تلاش کنید.", "Shown during maintenance"),
+            "payment_method": ("card_to_card", "Active payment method adapter"),
         }
         for k, (v, d) in defaults.items():
             await self.execute_write("INSERT OR IGNORE INTO settings(key,value,description) VALUES(?,?,?)", (k, v, d))
@@ -318,18 +349,44 @@ class Database:
             await self.execute_write("INSERT OR IGNORE INTO ranks(min_level,title) VALUES(?,?)", (min_level, title))
         for i, genre in enumerate(CANONICAL_GENRES):
             await self.execute_write("INSERT OR IGNORE INTO genres(name,is_active,sort_order) VALUES(?,?,?)", (genre, 1, i))
-        league_count = await self.fetchone("SELECT COUNT(*) c FROM leagues")
-        if league_count and league_count["c"] == 0:
-            await self.executemany_write(
-                "INSERT INTO leagues(name,min_cups,win_cups,loss_cups,sort_order) VALUES(?,?,?,?,?)",
-                [("برنزی", 0, 20, 0, 1), ("نقره‌ای", 300, 18, -8, 2), ("طلایی", 800, 16, -10, 3), ("الماسی", 1500, 14, -12, 4)],
-            )
+        await self.seed_fixed_leagues()
         count = await self.fetchone("SELECT COUNT(*) c FROM shop_packages")
         if count and count["c"] == 0:
             await self.executemany_write(
-                "INSERT INTO shop_packages(title, coins, xp, price_label, package_type) VALUES(?,?,?,?,?)",
-                [("بسته سکه شروع", 200, 0, "۵۰٬۰۰۰ تومان", "coins"), ("بسته XP", 0, 500, "۷۰٬۰۰۰ تومان", "xp"), ("بسته سکه حرفه‌ای", 800, 0, "۱۸۰٬۰۰۰ تومان", "coins")],
+                "INSERT INTO shop_packages(title, coins, xp, price_label, package_type, price_amount) VALUES(?,?,?,?,?,?)",
+                [("بسته سکه شروع", 200, 0, "۵۰٬۰۰۰ تومان", "coins", 50000), ("بسته XP", 0, 500, "۷۰٬۰۰۰ تومان", "xp", 70000), ("بسته سکه حرفه‌ای", 800, 0, "۱۸۰٬۰۰۰ تومان", "coins", 180000)],
             )
+
+    async def seed_fixed_leagues(self) -> None:
+        defaults = []
+        main = [
+            ("برنزی", 0, 25, 0),
+            ("نقره‌ای", 300, 22, -8),
+            ("طلایی", 750, 20, -15),
+            ("الماسی", 1350, 18, -25),
+        ]
+        order = 1
+        for league_name, base, win, loss in main:
+            for tier in (1, 2, 3):
+                defaults.append((f"{league_name} {tier}", league_name, tier, 0, base + (tier - 1) * 100, win - (tier - 1), loss - (tier - 1) * max(3, abs(loss) // 3), order))
+                order += 1
+        defaults.append(("اسطوره‌ای", "اسطوره‌ای", None, 1, 1800, 15, -40, order))
+        existing_structured = await self.fetchone("SELECT COUNT(*) c FROM leagues WHERE main_league IS NOT NULL")
+        if existing_structured and existing_structured["c"] == 0:
+            old_rows = await self.fetchall("SELECT id FROM leagues ORDER BY min_cups,id")
+            for idx, old in enumerate(old_rows[:len(defaults)]):
+                name, main_league, tier, is_final, min_cups, win_cups, loss_cups, sort_order = defaults[idx]
+                await self.execute_write("UPDATE leagues SET name=?,main_league=?,tier=?,is_final=?,min_cups=?,win_cups=?,loss_cups=?,sort_order=?,is_active=1 WHERE id=?", (name, main_league, tier, is_final, min_cups, win_cups, loss_cups, sort_order, old["id"]))
+            for item in defaults[len(old_rows):]:
+                name, main_league, tier, is_final, min_cups, win_cups, loss_cups, sort_order = item
+                await self.execute_write("INSERT INTO leagues(name,main_league,tier,is_final,min_cups,win_cups,loss_cups,sort_order,is_active) VALUES(?,?,?,?,?,?,?,?,1)", item)
+            return
+        for name, main_league, tier, is_final, min_cups, win_cups, loss_cups, sort_order in defaults:
+            row = await self.fetchone("SELECT id FROM leagues WHERE main_league=? AND ((tier IS NULL AND ? IS NULL) OR tier=?) AND is_final=?", (main_league, tier, tier, is_final))
+            if row:
+                await self.execute_write("UPDATE leagues SET is_active=1, sort_order=? WHERE id=?", (sort_order, row["id"]))
+            else:
+                await self.execute_write("INSERT INTO leagues(name,main_league,tier,is_final,min_cups,win_cups,loss_cups,sort_order,is_active) VALUES(?,?,?,?,?,?,?,?,1)", (name, main_league, tier, is_final, min_cups, win_cups, loss_cups, sort_order))
 
     async def add_owner_admins(self, ids: set[int]) -> None:
         for admin_id in ids:
@@ -414,7 +471,7 @@ class Database:
         return await self.fetchone("SELECT * FROM leagues WHERE is_active=1 AND min_cups<=? ORDER BY min_cups DESC LIMIT 1", (cups,))
 
     async def all_leagues(self) -> list[aiosqlite.Row]:
-        return await self.fetchall("SELECT * FROM leagues WHERE is_active=1 ORDER BY min_cups ASC")
+        return await self.fetchall("SELECT * FROM leagues WHERE is_active=1 ORDER BY sort_order ASC, min_cups ASC")
 
     async def get_league(self, league_id: int) -> aiosqlite.Row | None:
         return await self.fetchone("SELECT * FROM leagues WHERE id=?", (league_id,))
@@ -622,7 +679,9 @@ class Database:
                                    FROM users u ORDER BY u.level DESC,u.xp DESC LIMIT 10""")
 
     async def create_shop_tx(self, user_id: int, package_id: int) -> int:
-        cur = await self.execute_write("INSERT INTO shop_transactions(user_id,package_id,status,created_at) VALUES(?,?,?,?)", (user_id, package_id, "awaiting_receipt", now_iso()))
+        pkg = await self.get_package(package_id)
+        price = pkg["price_label"] if pkg else ""
+        cur = await self.execute_write("INSERT INTO shop_transactions(user_id,package_id,status,created_at,original_price_label,final_price_label,payment_method) VALUES(?,?,?,?,?,?,?)", (user_id, package_id, "awaiting_discount", now_iso(), price, price, await self.get_setting("payment_method", "card_to_card")))
         return int(cur.lastrowid)
 
     async def shop_packages(self, package_type: str | None = None) -> list[aiosqlite.Row]:
@@ -633,10 +692,16 @@ class Database:
     async def get_package(self, package_id: int) -> aiosqlite.Row | None:
         return await self.fetchone("SELECT * FROM shop_packages WHERE id=?", (package_id,))
 
+    def parse_price_amount(self, price_label: str) -> int:
+        trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+        digits = "".join(ch for ch in price_label.translate(trans) if ch.isdigit())
+        return int(digits) if digits else 0
+
     async def add_shop_package(self, package_type: str, title: str, amount: int, price_label: str) -> int:
         coins = amount if package_type == "coins" else 0
         xp = amount if package_type == "xp" else 0
-        cur = await self.execute_write("INSERT INTO shop_packages(title,coins,xp,price_label,package_type,is_active) VALUES(?,?,?,?,?,1)", (title, coins, xp, price_label, package_type))
+        price_amount = self.parse_price_amount(price_label)
+        cur = await self.execute_write("INSERT INTO shop_packages(title,coins,xp,price_label,package_type,price_amount,is_active) VALUES(?,?,?,?,?,?,1)", (title, coins, xp, price_label, package_type, price_amount))
         return int(cur.lastrowid)
 
     async def update_shop_package_field(self, package_id: int, field: str, value: Any) -> None:
@@ -646,7 +711,7 @@ class Database:
         if field == "title":
             await self.execute_write("UPDATE shop_packages SET title=? WHERE id=?", (str(value), package_id))
         elif field == "price_label":
-            await self.execute_write("UPDATE shop_packages SET price_label=? WHERE id=?", (str(value), package_id))
+            await self.execute_write("UPDATE shop_packages SET price_label=?, price_amount=? WHERE id=?", (str(value), self.parse_price_amount(str(value)), package_id))
         elif field == "amount":
             amount = int(value)
             if pkg["package_type"] == "xp":
@@ -662,8 +727,45 @@ class Database:
     async def save_receipt(self, tx_id: int, rtype: str, text: str | None, file_id: str | None) -> None:
         await self.execute_write("UPDATE shop_transactions SET status='pending_admin', receipt_type=?, receipt_text=?, receipt_file_id=? WHERE id=?", (rtype, text, file_id, tx_id))
 
+    async def mark_tx_ready_to_pay(self, tx_id: int) -> None:
+        await self.execute_write("UPDATE shop_transactions SET status='awaiting_receipt' WHERE id=?", (tx_id,))
+
+    async def create_discount(self, admin_id: int, code: str, discount_type: str, value: int, max_uses: int | None, expires_at: str | None) -> int:
+        cur = await self.execute_write("INSERT INTO discount_codes(code,discount_type,value,max_uses,expires_at,created_by,created_at) VALUES(?,?,?,?,?,?,?)", (code.upper().strip(), discount_type, value, max_uses, expires_at, admin_id, now_iso()))
+        return int(cur.lastrowid)
+
+    async def discounts(self) -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT * FROM discount_codes ORDER BY id DESC LIMIT 50")
+
+    async def disable_discount(self, discount_id: int) -> None:
+        await self.execute_write("UPDATE discount_codes SET is_active=0 WHERE id=?", (discount_id,))
+
+    async def get_discount_by_code(self, code: str) -> aiosqlite.Row | None:
+        return await self.fetchone("SELECT * FROM discount_codes WHERE code=? AND is_active=1", (code.upper().strip(),))
+
+    async def apply_discount_to_tx(self, tx_id: int, code: str) -> tuple[bool, str]:
+        tx = await self.get_tx(tx_id)
+        dc = await self.get_discount_by_code(code)
+        if not tx or not dc:
+            return False, "کد تخفیف معتبر نیست."
+        if dc["max_uses"] is not None and dc["used_count"] >= dc["max_uses"]:
+            return False, "ظرفیت استفاده از این کد تمام شده است."
+        if dc["expires_at"] and dc["expires_at"] < now_iso():
+            return False, "تاریخ انقضای این کد گذشته است."
+        amount = int(tx["price_amount"] or 0)
+        if amount <= 0:
+            final_label = tx["price_label"]
+        elif dc["discount_type"] == "percent":
+            final_amount = max(0, amount - (amount * int(dc["value"]) // 100))
+            final_label = f"{final_amount:,} تومان"
+        else:
+            final_amount = max(0, amount - int(dc["value"]))
+            final_label = f"{final_amount:,} تومان"
+        await self.execute_write("UPDATE shop_transactions SET discount_code_id=?, final_price_label=? WHERE id=?", (dc["id"], final_label, tx_id))
+        return True, final_label
+
     async def get_tx(self, tx_id: int) -> aiosqlite.Row | None:
-        return await self.fetchone("SELECT t.*, p.title,p.coins,p.xp,p.price_label FROM shop_transactions t JOIN shop_packages p ON p.id=t.package_id WHERE t.id=?", (tx_id,))
+        return await self.fetchone("SELECT t.*, p.title,p.coins,p.xp,p.price_label,p.price_amount,p.package_type FROM shop_transactions t JOIN shop_packages p ON p.id=t.package_id WHERE t.id=?", (tx_id,))
 
     async def review_tx(self, tx_id: int, admin_id: int, approve: bool) -> aiosqlite.Row | None:
         tx = await self.get_tx(tx_id)
@@ -672,6 +774,8 @@ class Database:
         status = "approved" if approve else "rejected"
         await self.execute_write("UPDATE shop_transactions SET status=?, admin_id=?, reviewed_at=? WHERE id=?", (status, admin_id, now_iso(), tx_id))
         if approve:
+            if tx["discount_code_id"]:
+                await self.execute_write("UPDATE discount_codes SET used_count=used_count+1 WHERE id=?", (tx["discount_code_id"],))
             if tx["coins"]:
                 await self.change_coins(tx["user_id"], tx["coins"], "shop_purchase")
             if tx["xp"]:
@@ -697,11 +801,37 @@ class Database:
         return int(cur.lastrowid)
 
     async def bulk_admin_add_questions(self, admin_id: int, items: list[dict[str, Any]]) -> int:
-        count = 0
+        ts = now_iso()
+        rows = []
         for item in items:
-            await self.admin_add_question(admin_id, item["question"], item["options"], item["correct"], item["genre"])
-            count += 1
-        return count
+            genre = normalize_genre_db(item["genre"])
+            rows.append((item["question"], item["options"][0], item["options"][1], item["options"][2], item["options"][3], item["correct"], genre, "active", admin_id, ts, admin_id, ts, admin_id, 1, admin_id))
+        async with self._write_lock:
+            await self.conn.executemany("""INSERT INTO questions(text,option1,option2,option3,option4,correct_option,genre,status,submitted_by,created_at,reviewed_by,reviewed_at,added_by,approved,approved_by)
+                                           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+            await self.conn.commit()
+        return len(rows)
+
+    async def pending_question_genre_counts(self) -> list[tuple[str, int]]:
+        rows = await self.fetchall("SELECT genre, COUNT(*) c FROM questions WHERE status='pending' GROUP BY genre ORDER BY genre")
+        return [(r["genre"], int(r["c"])) for r in rows]
+
+    async def pending_questions_by_genre(self, genre: str) -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT * FROM questions WHERE status='pending' AND genre=? ORDER BY created_at LIMIT 20", (genre,))
+
+    async def get_question(self, qid: int) -> aiosqlite.Row | None:
+        return await self.fetchone("SELECT * FROM questions WHERE id=?", (qid,))
+
+    async def invalid_genre_questions(self) -> list[aiosqlite.Row]:
+        return await self.fetchall("SELECT id,text,genre,status FROM questions WHERE genre NOT IN (%s) ORDER BY id LIMIT 200" % ",".join("?" for _ in CANONICAL_GENRES), tuple(CANONICAL_GENRES))
+
+    async def delete_invalid_genre_questions(self) -> int:
+        rows = await self.invalid_genre_questions()
+        ids = [r["id"] for r in rows]
+        if not ids:
+            return 0
+        await self.execute_write("DELETE FROM questions WHERE id IN (%s)" % ",".join("?" for _ in ids), ids)
+        return len(ids)
 
     async def review_question(self, qid: int, admin_id: int, approve: bool) -> aiosqlite.Row | None:
         q = await self.fetchone("SELECT * FROM questions WHERE id=?", (qid,))

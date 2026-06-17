@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class ShopReceipt(StatesGroup):
+    waiting_discount = State()
     waiting_receipt = State()
 
 
@@ -24,6 +25,7 @@ class AdminFlow(StatesGroup):
     waiting_user_id = State()
     waiting_user_delta = State()
     waiting_admin_id = State()
+    waiting_start_photo = State()
 
 
 class BulkQuestionImport(StatesGroup):
@@ -48,3 +50,15 @@ class LeagueFlow(StatesGroup):
     edit_min_cups = State()
     edit_win_cups = State()
     edit_loss_cups = State()
+
+
+class DiscountFlow(StatesGroup):
+    code = State()
+    kind = State()
+    value = State()
+    max_uses = State()
+    expires_at = State()
+
+
+class QuestionCleanupFlow(StatesGroup):
+    confirm_delete_invalid = State()

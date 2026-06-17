@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from app.utils import normalize_genre
+from app.utils import CANONICAL_GENRES
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,28 @@ QUESTION_KEYS = ("question", "text", "q", "title", "prompt")
 GENRE_KEYS = ("category", "genre", "cat", "subject", "topic")
 CORRECT_KEYS = ("correct", "answer", "right", "correct_option", "correctAnswer")
 OPTIONS_KEYS = ("options", "choices", "answers")
+IGNORED_KEYS = {"added_by", "approved", "approved_by", "created_at"}
+
+
+def bulk_help_text(genres: list[str] | None = None) -> str:
+    genres = genres or CANONICAL_GENRES
+    sample = '''{
+  "q_0001": {
+    "category": "فوتبال",
+    "question": "کدام کشور قهرمان جام جهانی ۲۰۲۲ شد؟",
+    "options": {"A": "فرانسه", "B": "آرژانتین", "C": "برزیل", "D": "آلمان"},
+    "correct": "B"
+  }
+}'''
+    return (
+        "📥 افزودن Bulk سوال\n\n"
+        "ژانرهای معتبر دقیقاً یکی از این موارد هستند:\n"
+        + "، ".join(genres)
+        + "\n\nنمونه JSON قابل قبول:\n"
+        + f"<pre>{sample}</pre>\n"
+        + "می‌توانی JSON را در چند پیام پشت‌سرهم بفرستی یا فایل .json/.txt ارسال کنی. "
+        + "وقتی تمام شد، دستور /done را بفرست. برای لغو /cancel یا دکمه انصراف."
+    )
 
 
 def _pick(obj: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -50,17 +72,22 @@ def _extract_correct(raw: Any) -> int | None:
 
 def _iter_question_objects(data: Any) -> list[tuple[str, dict[str, Any]]]:
     if isinstance(data, list):
-        return [(f"item_{i+1}", x) for i, x in enumerate(data) if isinstance(x, dict)]
+        pairs = []
+        for i, x in enumerate(data):
+            if isinstance(x, dict):
+                pairs.append((f"item_{i+1}", x))
+            else:
+                pairs.append((f"item_{i+1}", {"__invalid__": x}))
+        return pairs
     if isinstance(data, dict):
-        # Common format: {"q_123": {...}}
         if all(isinstance(v, dict) for v in data.values()):
             return [(str(k), v) for k, v in data.items()]
-        # Single question object
         return [("item_1", data)]
     return []
 
 
-def parse_bulk_questions(payload: str) -> tuple[list[dict[str, Any]], list[str]]:
+def parse_bulk_questions(payload: str, valid_genres: list[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    valid = set(valid_genres or CANONICAL_GENRES)
     accepted: list[dict[str, Any]] = []
     rejected: list[str] = []
     try:
@@ -74,12 +101,18 @@ def parse_bulk_questions(payload: str) -> tuple[list[dict[str, Any]], list[str]]
         return [], ["ساختار JSON قابل تشخیص نیست؛ باید آرایه‌ای از سوال‌ها یا آبجکت q_xxx باشد."]
 
     for key, obj in items:
+        if "__invalid__" in obj:
+            rejected.append(f"{key}: آیتم باید آبجکت سوال باشد")
+            continue
         question = _pick(obj, QUESTION_KEYS)
         genre = _pick(obj, GENRE_KEYS)
         options_raw = _pick(obj, OPTIONS_KEYS)
         correct_raw = _pick(obj, CORRECT_KEYS)
         if not question or not str(question).strip():
             rejected.append(f"{key}: متن سوال خالی یا نامعتبر است")
+            continue
+        if not genre or str(genre).strip() not in valid:
+            rejected.append(f"{key}: ژانر نامعتبر است: {genre!r}. ژانر باید دقیقاً یکی از لیست رسمی باشد")
             continue
         options = _extract_options(options_raw)
         if not options or any(not o for o in options):
@@ -93,15 +126,18 @@ def parse_bulk_questions(payload: str) -> tuple[list[dict[str, Any]], list[str]]
             "question": str(question).strip(),
             "options": options,
             "correct": correct,
-            "genre": normalize_genre(str(genre or "علم و دانش")),
+            "genre": str(genre).strip(),
         })
-    return accepted, rejected
+    if rejected:
+        return [], rejected
+    return accepted, []
 
 
 def format_bulk_report(success: int, rejected: list[str]) -> str:
-    text = f"📥 گزارش افزودن Bulk سوال\n\n✅ افزوده شد: {success}\n❌ رد شد: {len(rejected)}"
     if rejected:
-        text += "\n\nدلایل رد:\n" + "\n".join(f"- {r}" for r in rejected[:40])
-        if len(rejected) > 40:
-            text += f"\n... و {len(rejected) - 40} مورد دیگر"
-    return text
+        text = f"📥 گزارش افزودن Bulk سوال\n\n❌ کل batch رد شد و هیچ سوالی درج نشد.\nتعداد خطا: {len(rejected)}"
+        text += "\n\nدلایل رد:\n" + "\n".join(f"- {r}" for r in rejected[:60])
+        if len(rejected) > 60:
+            text += f"\n... و {len(rejected) - 60} مورد دیگر"
+        return text
+    return f"📥 گزارش افزودن Bulk سوال\n\n✅ همه سوالات معتبر بودند و {success} سوال با موفقیت اضافه شد."

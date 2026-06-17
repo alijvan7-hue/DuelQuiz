@@ -9,7 +9,7 @@ from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 
-from app.db import Database
+from app.db import Database, now_iso
 from app.keyboards import duel_menu, genres_keyboard, question_keyboard, main_menu
 from app.utils import invite_token, options_from_question
 from app.states import ReportQuestion
@@ -27,6 +27,7 @@ class DuelRuntime:
 
 runtimes: dict[int, DuelRuntime] = {}
 user_genre_temp: dict[tuple[int, int], set[str]] = {}
+queue_timeout_tasks: dict[int, asyncio.Task] = {}
 
 
 def runtime(duel_id: int) -> DuelRuntime:
@@ -51,19 +52,44 @@ async def random_duel(call: CallbackQuery, db: Database, bot: Bot) -> None:
         if active:
             await call.answer("شما یک دوئل فعال دارید.", show_alert=True)
             return
+        cost = await db.get_int('random_duel_cost', 5)
+        user = await db.get_user(call.from_user.id)
+        if not user or user['coins'] < cost:
+            await call.answer(f"برای ورود به صف دوئل شانسی به {cost} سکه نیاز داری.", show_alert=True)
+            return
         waiting = await db.find_waiting_duel(call.from_user.id)
+        await db.change_coins(call.from_user.id, -cost, 'random_duel_entry')
         if waiting:
+            task = queue_timeout_tasks.pop(waiting['id'], None)
+            if task and not task.done():
+                task.cancel()
             await db.join_duel(waiting['id'], call.from_user.id)
             await call.message.answer("حریف پیدا شد! انتخاب ژانر شروع شد.")
             await bot.send_message(waiting['player1_id'], "حریف پیدا شد! انتخاب ژانر شروع شد.")
             await offer_genres(waiting['id'], db, bot)
         else:
-            await db.create_waiting_duel(call.from_user.id)
-            await call.message.answer("در صف انتظار قرار گرفتی. به‌محض پیدا شدن حریف خبر می‌دهم.")
+            duel_id = await db.create_waiting_duel(call.from_user.id)
+            timeout = await db.get_int('matchmaking_timeout_seconds', 120)
+            queue_timeout_tasks[duel_id] = asyncio.create_task(random_queue_timeout(duel_id, call.from_user.id, cost, timeout, db, bot))
+            await call.message.answer(f"در صف انتظار قرار گرفتی. حداکثر {timeout} ثانیه منتظر حریف می‌مانی. اگر حریفی پیدا نشود، صف لغو و {cost} سکه برگردانده می‌شود.")
         await call.answer()
     except Exception:
         logger.exception("Random duel failed")
         await call.answer("خطا", show_alert=True)
+
+
+async def random_queue_timeout(duel_id: int, user_id: int, cost: int, seconds: int, db: Database, bot: Bot) -> None:
+    try:
+        await asyncio.sleep(seconds)
+        duel = await db.get_duel(duel_id)
+        if duel and duel['status'] == 'waiting' and duel['player1_id'] == user_id:
+            await db.execute_write("UPDATE duels SET status='cancelled', finished_at=? WHERE id=?", (now_iso(), duel_id))
+            await db.change_coins(user_id, cost, 'random_duel_timeout_refund')
+            await bot.send_message(user_id, f"⏱ حریفی پیدا نشد؛ صف دوئل شانسی لغو شد و {cost} سکه به حساب شما برگشت.", reply_markup=main_menu(await db.is_admin(user_id)))
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Random queue timeout failed")
 
 
 @router.callback_query(F.data == "duel:invite")
@@ -73,10 +99,16 @@ async def invite_duel(call: CallbackQuery, db: Database, bot_username: str) -> N
         if active:
             await call.answer("شما یک دوئل فعال دارید.", show_alert=True)
             return
+        cost = await db.get_int('friendly_duel_cost', 20)
+        user = await db.get_user(call.from_user.id)
+        if not user or user['coins'] < cost:
+            await call.answer(f"برای ساخت دوئل دوستانه به {cost} سکه نیاز داری.", show_alert=True)
+            return
+        await db.change_coins(call.from_user.id, -cost, 'friendly_duel_create')
         token = invite_token()
         await db.create_invite_duel(call.from_user.id, token)
         link = f"https://t.me/{bot_username}?start=invite_{token}"
-        await call.message.answer(f"این لینک را برای دوستت بفرست:\n{link}")
+        await call.message.answer(f"{cost} سکه از سازنده کسر شد. این لینک را برای دوستت بفرست:\n{link}")
         await call.answer()
     except Exception:
         logger.exception("Invite duel failed")

@@ -7,10 +7,12 @@ from app.db import Database, now_iso
 from app.keyboards import (
     admin_panel, settings_keyboard, user_admin_keyboard, main_menu, cancel_keyboard,
     admin_shop_types_keyboard, admin_shop_packages_keyboard, admin_shop_edit_keyboard,
-    admin_leagues_keyboard, admin_league_edit_keyboard,
+    admin_leagues_keyboard, admin_league_edit_keyboard, admin_discounts_keyboard,
+    discount_kind_keyboard, question_manage_keyboard, pending_questions_keyboard,
+    invalid_questions_confirm_keyboard, review_question_keyboard,
 )
-from app.states import AdminFlow, BulkQuestionImport, ShopPackageFlow, LeagueFlow
-from app.bulk_questions import parse_bulk_questions, format_bulk_report
+from app.states import AdminFlow, BulkQuestionImport, ShopPackageFlow, LeagueFlow, DiscountFlow, QuestionCleanupFlow
+from app.bulk_questions import parse_bulk_questions, format_bulk_report, bulk_help_text
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -84,11 +86,34 @@ async def admin_callback(call: CallbackQuery, db: Database, state: FSMContext) -
             await db.log_admin(call.from_user.id, "backup")
         elif action == 'bulk_questions':
             await state.set_state(BulkQuestionImport.waiting_json)
-            await call.message.answer("JSON سوال‌ها را به‌صورت متن بفرست یا فایل .json/.txt ارسال کن.", reply_markup=cancel_keyboard())
+            await state.update_data(bulk_chunks=[])
+            await call.message.answer(bulk_help_text(await db.all_genres()), reply_markup=cancel_keyboard())
         elif action == 'shop_manage':
             await call.message.answer("کدام بخش فروشگاه مدیریت شود؟", reply_markup=admin_shop_types_keyboard())
+        elif action == 'discounts':
+            await call.message.answer("مدیریت کدهای تخفیف:", reply_markup=admin_discounts_keyboard(await db.discounts()))
         elif action == 'leagues':
-            await call.message.answer("مدیریت لیگ‌ها:", reply_markup=admin_leagues_keyboard(await db.all_leagues()))
+            await call.message.answer("مدیریت لیگ‌ها/تیرها (ساختار ثابت است؛ فقط اعداد و نام‌ها ویرایش می‌شوند):", reply_markup=admin_leagues_keyboard(await db.all_leagues()))
+        elif action == 'maintenance_toggle':
+            cur = await db.get_int("maintenance_mode", 0)
+            new_val = "0" if cur else "1"
+            await db.set_setting("maintenance_mode", new_val)
+            await db.log_admin(call.from_user.id, "maintenance_toggle", details=new_val)
+            await call.message.answer("حالت تعمیر " + ("روشن شد." if new_val == "1" else "خاموش شد."), reply_markup=admin_panel())
+        elif action == 'start_photo':
+            await state.set_state(AdminFlow.waiting_start_photo)
+            await call.message.answer("عکس جدید پیام /start را ارسال کنید. برای حذف عکس، متن /remove_photo را بفرستید.", reply_markup=cancel_keyboard())
+        elif action == 'question_manage':
+            counts = await db.pending_question_genre_counts()
+            await call.message.answer("سوالات در صف تایید بر اساس ژانر:", reply_markup=question_manage_keyboard(counts))
+        elif action == 'question_cleanup':
+            invalid = await db.invalid_genre_questions()
+            if not invalid:
+                await call.message.answer("هیچ سوالی با ژانر نامعتبر پیدا نشد.")
+            else:
+                lines = [f"#{r['id']} | {r['genre']} | {r['text'][:50]}" for r in invalid[:50]]
+                await state.set_state(QuestionCleanupFlow.confirm_delete_invalid)
+                await call.message.answer("سوالات با ژانر نامعتبر پیدا شدند:\n" + "\n".join(lines) + f"\n\nتعداد نمایش/حذف در این مرحله: {len(invalid)}", reply_markup=invalid_questions_confirm_keyboard())
         await call.answer()
     except Exception:
         logger.exception("Admin callback failed")
@@ -100,6 +125,21 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
     try:
         if not await require_admin_message(message, db):
             return
+        data_state = await state.get_data()
+        chunks = list(data_state.get("bulk_chunks", []))
+        if message.text and message.text.strip() == "/done":
+            payload = "\n".join(chunks).strip()
+            if not payload:
+                await message.answer("هنوز هیچ محتوایی دریافت نشده است.")
+                return
+            accepted, rejected = parse_bulk_questions(payload, await db.all_genres())
+            success = 0
+            if not rejected and accepted:
+                success = await db.bulk_admin_add_questions(message.from_user.id, accepted)
+            await db.log_admin(message.from_user.id, "bulk_questions", details=f"success={success}, rejected={len(rejected)}")
+            await state.clear()
+            await message.answer(format_bulk_report(success, rejected), reply_markup=ReplyKeyboardRemove())
+            return
         payload = message.text or ""
         if message.document:
             name = message.document.file_name or ""
@@ -107,15 +147,14 @@ async def bulk_questions_receive(message: Message, db: Database, state: FSMConte
                 await message.answer("فقط فایل .json یا .txt قابل قبول است.")
                 return
             file = await bot.get_file(message.document.file_id)
-            data = await bot.download_file(file.file_path)
-            payload = data.read().decode("utf-8-sig")
-        accepted, rejected = parse_bulk_questions(payload)
-        success = 0
-        if accepted:
-            success = await db.bulk_admin_add_questions(message.from_user.id, accepted)
-        await db.log_admin(message.from_user.id, "bulk_questions", details=f"success={success}, rejected={len(rejected)}")
-        await state.clear()
-        await message.answer(format_bulk_report(success, rejected), reply_markup=ReplyKeyboardRemove())
+            downloaded = await bot.download_file(file.file_path)
+            payload = downloaded.read().decode("utf-8-sig")
+        if not payload.strip():
+            await message.answer("متن JSON یا فایل .json/.txt بفرست؛ بعد از اتمام /done را ارسال کن.")
+            return
+        chunks.append(payload)
+        await state.update_data(bulk_chunks=chunks)
+        await message.answer(f"✅ بخش {len(chunks)} دریافت شد. اگر تمام شد /done را بفرست؛ در غیر این صورت بخش بعدی را ارسال کن.")
     except UnicodeDecodeError:
         logger.exception("Bulk file encoding failed")
         await message.answer("فایل باید UTF-8 باشد.")
@@ -369,17 +408,16 @@ async def league_callback(call: CallbackQuery, db: Database, state: FSMContext) 
         parts = call.data.split(":")
         action = parts[1]
         if action == "add":
-            await state.set_state(LeagueFlow.name)
-            await call.message.answer("نام لیگ را وارد کنید:", reply_markup=cancel_keyboard())
+            await call.answer("ساختار لیگ ثابت است؛ فقط ویرایش مجاز است.", show_alert=True)
+            return
         elif action == "edit":
             lg = await db.get_league(int(parts[2]))
             if not lg:
                 await call.answer("لیگ پیدا نشد.", show_alert=True); return
             await call.message.answer(f"ویرایش لیگ #{lg['id']} — {lg['name']}", reply_markup=admin_league_edit_keyboard(lg['id']))
         elif action == "delete":
-            await db.delete_league(int(parts[2]))
-            await db.log_admin(call.from_user.id, "league_delete", parts[2])
-            await call.message.answer("لیگ حذف/غیرفعال شد.", reply_markup=admin_leagues_keyboard(await db.all_leagues()))
+            await call.answer("حذف لیگ مجاز نیست؛ ساختار ۴ لیگ × ۳ تیر + لیگ نهایی ثابت است.", show_alert=True)
+            return
         await call.answer()
     except Exception:
         logger.exception("League callback failed")
@@ -469,3 +507,145 @@ async def league_edit_save(message: Message, db: Database, state: FSMContext) ->
     except Exception:
         logger.exception("League edit save failed")
         await message.answer("خطا در ویرایش لیگ. احتمالاً آستانه کاپ تکراری است.")
+
+
+@router.message(AdminFlow.waiting_start_photo)
+async def start_photo_save(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_message(message, db):
+            return
+        if message.text and message.text.strip() == "/remove_photo":
+            await db.set_setting("start_photo_file_id", "")
+            await db.log_admin(message.from_user.id, "start_photo_remove")
+            await state.clear()
+            await message.answer("عکس استارت حذف شد.", reply_markup=main_menu(True))
+            return
+        if not message.photo:
+            await message.answer("لطفاً عکس ارسال کنید یا /remove_photo را بفرستید.")
+            return
+        file_id = message.photo[-1].file_id
+        await db.set_setting("start_photo_file_id", file_id)
+        await db.log_admin(message.from_user.id, "start_photo_update")
+        await state.clear()
+        await message.answer("عکس استارت ذخیره شد.", reply_markup=main_menu(True))
+    except Exception:
+        logger.exception("Start photo save failed")
+        await message.answer("خطا در ذخیره عکس استارت.")
+
+
+@router.callback_query(F.data.startswith("discount:"))
+async def discount_callback(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_call(call, db):
+            return
+        await state.clear()
+        _, action, *rest = call.data.split(":")
+        if action == "add":
+            await state.set_state(DiscountFlow.code)
+            await call.message.answer("کد تخفیف را وارد کنید (مثلاً OFF20):", reply_markup=cancel_keyboard())
+        elif action == "disable":
+            await db.disable_discount(int(rest[0]))
+            await db.log_admin(call.from_user.id, "discount_disable", rest[0])
+            await call.message.answer("کد تخفیف غیرفعال شد.", reply_markup=admin_discounts_keyboard(await db.discounts()))
+        await call.answer()
+    except Exception:
+        logger.exception("Discount callback failed")
+        await call.answer("خطا", show_alert=True)
+
+
+@router.message(DiscountFlow.code, F.text)
+async def discount_code(message: Message, db: Database, state: FSMContext) -> None:
+    if not await require_admin_message(message, db): return
+    await state.update_data(code=message.text.strip().upper())
+    await state.set_state(DiscountFlow.kind)
+    await message.answer("نوع تخفیف را انتخاب کنید:", reply_markup=discount_kind_keyboard())
+
+
+@router.callback_query(F.data.startswith("discount_kind:"))
+async def discount_kind(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    if not await require_admin_call(call, db): return
+    kind = call.data.split(":")[1]
+    await state.update_data(kind=kind)
+    await state.set_state(DiscountFlow.value)
+    await call.message.answer("مقدار تخفیف را عددی وارد کنید؛ برای درصد مثلاً 20، برای مبلغ ثابت مثلاً 50000:", reply_markup=cancel_keyboard())
+    await call.answer()
+
+
+@router.message(DiscountFlow.value, F.text)
+async def discount_value(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_message(message, db): return
+        value = int(message.text.strip())
+        if value <= 0: raise ValueError
+        data = await state.get_data()
+        if data.get("kind") == "percent" and value > 100:
+            await message.answer("درصد باید بین ۱ تا ۱۰۰ باشد.")
+            return
+        await state.update_data(value=value)
+        await state.set_state(DiscountFlow.max_uses)
+        await message.answer("حداکثر تعداد استفاده را عددی وارد کنید؛ برای نامحدود 0 بفرستید:", reply_markup=cancel_keyboard())
+    except ValueError:
+        await message.answer("عدد معتبر وارد کنید.")
+
+
+@router.message(DiscountFlow.max_uses, F.text)
+async def discount_max_uses(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_message(message, db): return
+        max_uses = int(message.text.strip())
+        await state.update_data(max_uses=None if max_uses <= 0 else max_uses)
+        await state.set_state(DiscountFlow.expires_at)
+        await message.answer("تاریخ انقضا را به فرمت ISO بفرستید مثل 2026-12-31T23:59:00+00:00؛ برای بدون انقضا 0 بفرستید:", reply_markup=cancel_keyboard())
+    except ValueError:
+        await message.answer("عدد معتبر وارد کنید.")
+
+
+@router.message(DiscountFlow.expires_at, F.text)
+async def discount_expires(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_message(message, db): return
+        data = await state.get_data()
+        expires = None if message.text.strip() == "0" else message.text.strip()
+        did = await db.create_discount(message.from_user.id, data['code'], data['kind'], int(data['value']), data.get('max_uses'), expires)
+        await db.log_admin(message.from_user.id, "discount_add", str(did))
+        await state.clear()
+        await message.answer("کد تخفیف ساخته شد.", reply_markup=admin_discounts_keyboard(await db.discounts()))
+    except Exception:
+        logger.exception("Discount create failed")
+        await message.answer("خطا در ساخت کد تخفیف. شاید کد تکراری است.")
+
+
+@router.callback_query(F.data.startswith("qadmin:"))
+async def question_admin_callback(call: CallbackQuery, db: Database) -> None:
+    try:
+        if not await require_admin_call(call, db): return
+        parts = call.data.split(":", 2)
+        action = parts[1]
+        if action == "genre":
+            genre = parts[2]
+            qs = await db.pending_questions_by_genre(genre)
+            await call.message.answer(f"سوالات pending ژانر {genre}:", reply_markup=pending_questions_keyboard(qs, genre))
+        elif action == "view":
+            q = await db.get_question(int(parts[2]))
+            if not q:
+                await call.answer("سوال پیدا نشد.", show_alert=True); return
+            text = f"سوال #{q['id']}\nژانر: {q['genre']}\n\n{q['text']}\n1) {q['option1']}\n2) {q['option2']}\n3) {q['option3']}\n4) {q['option4']}\nCorrect: {q['correct_option']}"
+            await call.message.answer(text, reply_markup=review_question_keyboard(q['id']))
+        await call.answer()
+    except Exception:
+        logger.exception("Question admin callback failed")
+        await call.answer("خطا", show_alert=True)
+
+
+@router.callback_query(F.data == "qcleanup:confirm")
+async def question_cleanup_confirm(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    try:
+        if not await require_admin_call(call, db): return
+        count = await db.delete_invalid_genre_questions()
+        await db.log_admin(call.from_user.id, "question_cleanup_invalid", details=str(count))
+        await state.clear()
+        await call.message.answer(f"{count} سوال با ژانر نامعتبر حذف شد.", reply_markup=admin_panel())
+        await call.answer()
+    except Exception:
+        logger.exception("Question cleanup failed")
+        await call.answer("خطا", show_alert=True)

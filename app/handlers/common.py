@@ -23,7 +23,11 @@ async def start(message: Message, db: Database, state: FSMContext, command: Comm
             await join_invite_from_start(message, db, payload.removeprefix('invite_'))
             return
         welcome = await db.get_setting("welcome_text", "سلام! به ربات کوییز دوئلی خوش آمدی. از منوی پایین انتخاب کن:")
-        await message.answer(welcome, reply_markup=main_menu(is_admin))
+        photo_id = await db.get_setting("start_photo_file_id", "")
+        if photo_id:
+            await message.answer_photo(photo_id, caption=welcome, reply_markup=main_menu(is_admin))
+        else:
+            await message.answer(welcome, reply_markup=main_menu(is_admin))
     except Exception:
         logger.exception("Start failed")
         await message.answer("خطایی رخ داد. لطفاً دوباره تلاش کن.")
@@ -61,14 +65,19 @@ async def profile(message: Message, db: Database) -> None:
         rank = await db.get_rank_title(u['level'])
         league = await db.get_user_league(u['cups'])
         cur, nxt = await db.level_bounds(u['level'])
+        total_duels = int(u['wins']) + int(u['losses']) + int(u['draws'])
+        wrong = max(0, int(u['total_answers']) - int(u['correct_answers']))
+        username = f"@{u['username']}" if u['username'] else "—"
+        joined = str(u['created_at']).split('T')[0]
+        xp_bar = xp_progress_text(u['xp'], cur, nxt)
         await message.answer(
-            f"👤 پروفایل شما\n"
-            f"آیدی: <code>{u['telegram_id']}</code>\n"
-            f"سکه: {u['coins']}\nXP: {u['xp']} ({xp_progress_text(u['xp'], cur, nxt)})\n"
-            f"سطح: {u['level']} — {rank}\n"
-            f"کاپ: {u['cups']} | لیگ: {league['name'] if league else 'بدون لیگ'}\n"
-            f"برد/باخت/مساوی: {u['wins']}/{u['losses']}/{u['draws']}\n"
-            f"پاسخ صحیح: {u['correct_answers']} از {u['total_answers']}",
+            f"👤 <b>{u['first_name'] or 'کاربر'}</b>  {username}\n"
+            f"🏅 {rank} | <b>Level {u['level']}</b> | XP {xp_bar}\n"
+            f"🏆 {league['name'] if league else 'بدون لیگ'} — <b>{u['cups']} جام</b>\n"
+            f"🪙 سکه: <b>{u['coins']}</b>\n\n"
+            f"⚔️ دوئل‌ها: {total_duels} | برد <b>{u['wins']}</b> / مساوی {u['draws']} / شکست <b>{u['losses']}</b>\n"
+            f"✅ پاسخ صحیح: {u['correct_answers']} | ❌ غلط: {wrong}\n"
+            f"📅 عضویت: {joined}",
             reply_markup=ReplyKeyboardRemove(),
         )
     except Exception:
@@ -108,7 +117,7 @@ async def leaderboard_callback(call: CallbackQuery, db: Database) -> None:
         for i, r in enumerate(rows, 1):
             name = r['first_name'] or (('@' + r['username']) if r['username'] else str(r['telegram_id']))
             score_label = "کاپ" if basis == "league" else "امتیاز"
-            text += rtl_line(f"{i}. {name} | لیگ: {r['league_name']} | سطح: {r['level']} | {score_label}: {r['score']}") + "\n"
+            text += rtl_line(f"{i}. {name} | {r['league_name']} | 🏆 {r['cups']} | سطح {r['level']} | {score_label}: {r['score']}") + "\n"
         await call.message.edit_text(text, reply_markup=leaderboard_period_keyboard(basis))
         await call.answer()
     except Exception:

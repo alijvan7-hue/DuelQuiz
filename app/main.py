@@ -29,7 +29,9 @@ async def main() -> None:
     bot_username = settings.bot_username or me.username or ""
 
     dp = Dispatcher(storage=MemoryStorage())
-    dp.message.middleware(ActiveDuelMenuGuardMiddleware())
+    guard = ActiveDuelMenuGuardMiddleware()
+    dp.message.middleware(guard)
+    dp.callback_query.middleware(guard)
 
     dp.workflow_data.update(
         db=db,

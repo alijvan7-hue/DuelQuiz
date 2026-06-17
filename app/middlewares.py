@@ -2,23 +2,40 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from app.db import Database
 from app.keyboards import MAIN_MENU_TEXTS
 
 logger = logging.getLogger(__name__)
 
 
-class ActiveDuelMenuGuardMiddleware(BaseMiddleware):
-    async def __call__(self, handler: Callable[[Message, dict[str, Any]], Awaitable[Any]], event: Message, data: dict[str, Any]) -> Any:
-        if isinstance(event, Message) and event.text in MAIN_MENU_TEXTS:
-            try:
-                db: Database | None = data.get("db")
-                if db and event.from_user:
+class AccessGuardMiddleware(BaseMiddleware):
+    async def __call__(self, handler: Callable[[Any, dict[str, Any]], Awaitable[Any]], event: Any, data: dict[str, Any]) -> Any:
+        db: Database | None = data.get("db")
+        try:
+            if isinstance(event, Message):
+                if event.chat.type != "private":
+                    if event.text and event.text.startswith("/start"):
+                        await event.answer("برای بازی باید از طریق پیوی (چت خصوصی) با بات وارد شوید.")
+                    return None
+                if db and event.from_user and await db.get_int("maintenance_mode", 0) == 1 and not await db.is_admin(event.from_user.id):
+                    await event.answer(await db.get_setting("maintenance_text", "بات موقتاً در حال تعمیر است."))
+                    return None
+                if db and event.from_user and event.text in MAIN_MENU_TEXTS:
                     duel = await db.active_duel_for_user(event.from_user.id)
                     if duel and duel["status"] in {"waiting", "invite_waiting", "genre_selection", "playing"}:
-                        await event.answer("شما در حال بازی/دوئل فعال هستید؛ لطفاً ابتدا دوئل را تمام کنید.")
+                        await event.answer("شما در حال بازی هستید؛ لطفاً ابتدا دوئل را تمام کنید.")
                         return None
-            except Exception:
-                logger.exception("Active duel guard failed")
+            elif isinstance(event, CallbackQuery):
+                if event.message and event.message.chat.type != "private":
+                    return None
+                if db and event.from_user and await db.get_int("maintenance_mode", 0) == 1 and not await db.is_admin(event.from_user.id):
+                    await event.answer(await db.get_setting("maintenance_text", "بات موقتاً در حال تعمیر است."), show_alert=True)
+                    return None
+        except Exception:
+            logger.exception("Access guard failed")
         return await handler(event, data)
+
+
+# Backward-compatible name used by older main.py imports.
+ActiveDuelMenuGuardMiddleware = AccessGuardMiddleware

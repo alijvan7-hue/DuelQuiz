@@ -3,8 +3,12 @@ from aiogram import Bot, Router, F
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from app.db import Database
-from app.keyboards import shop_keyboard, review_tx_keyboard, shop_sections_keyboard, cancel_keyboard, main_menu
+from app.keyboards import (
+    shop_keyboard, review_tx_keyboard, shop_sections_keyboard, cancel_keyboard, main_menu,
+    discount_apply_keyboard,
+)
 from app.states import ShopReceipt
+from app.payments import get_payment_provider
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -48,19 +52,66 @@ async def package_selected(call: CallbackQuery, db: Database, state: FSMContext)
             await call.answer("بسته پیدا نشد.", show_alert=True)
             return
         tx_id = await db.create_shop_tx(call.from_user.id, package_id)
-        card = await db.get_setting('payment_card_number', 'تنظیم نشده')
-        await state.set_state(ShopReceipt.waiting_receipt)
-        await state.update_data(tx_id=tx_id)
+        await state.clear()
         await call.message.answer(
-            f"بسته: {p['title']}\nسکه: {p['coins']} | XP: {p['xp']}\nمبلغ: {p['price_label']}\n\n"
-            f"شماره کارت:\n<code>{card}</code>\n\n"
-            "بعد از واریز، رسید را به‌صورت عکس یا متن همین‌جا ارسال کن.",
-            reply_markup=cancel_keyboard(),
+            f"بسته: {p['title']}\nسکه: {p['coins']} | XP: {p['xp']}\nقیمت: {p['price_label']}\n\n"
+            "اگر کد تخفیف داری وارد کن، وگرنه ادامه بدون تخفیف را بزن.",
+            reply_markup=discount_apply_keyboard(tx_id),
         )
         await call.answer()
     except Exception:
         logger.exception("Package select failed")
         await call.answer("خطا", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("discount_apply:"))
+async def discount_apply_start(call: CallbackQuery, state: FSMContext) -> None:
+    tx_id = int(call.data.split(":")[1])
+    await state.set_state(ShopReceipt.waiting_discount)
+    await state.update_data(tx_id=tx_id)
+    await call.message.answer("کد تخفیف را وارد کن:", reply_markup=cancel_keyboard())
+    await call.answer()
+
+
+@router.message(ShopReceipt.waiting_discount, F.text)
+async def discount_apply_text(message: Message, db: Database, state: FSMContext) -> None:
+    try:
+        data = await state.get_data()
+        tx_id = int(data['tx_id'])
+        ok, result = await db.apply_discount_to_tx(tx_id, message.text.strip())
+        if not ok:
+            await message.answer(result + "\nدوباره کد بفرست یا /cancel بزن.")
+            return
+        await state.clear()
+        await message.answer(f"✅ کد تخفیف اعمال شد. مبلغ نهایی: <b>{result}</b>")
+        await send_payment_instructions(message, tx_id, db, state)
+    except Exception:
+        logger.exception("Apply discount failed")
+        await message.answer("خطا در اعمال کد تخفیف.")
+
+
+@router.callback_query(F.data.startswith("pay:start:"))
+async def payment_start_callback(call: CallbackQuery, db: Database, state: FSMContext) -> None:
+    try:
+        tx_id = int(call.data.split(":")[2])
+        await send_payment_instructions(call.message, tx_id, db, state)
+        await call.answer()
+    except Exception:
+        logger.exception("Payment start failed")
+        await call.answer("خطا", show_alert=True)
+
+
+async def send_payment_instructions(message: Message, tx_id: int, db: Database, state: FSMContext) -> None:
+    tx = await db.get_tx(tx_id)
+    if not tx:
+        await message.answer("تراکنش پیدا نشد.")
+        return
+    await db.mark_tx_ready_to_pay(tx_id)
+    provider = await get_payment_provider(db)
+    instructions = await provider.instructions(db, tx)
+    await state.set_state(ShopReceipt.waiting_receipt)
+    await state.update_data(tx_id=tx_id)
+    await message.answer(instructions.text, reply_markup=cancel_keyboard())
 
 
 @router.message(ShopReceipt.waiting_receipt)
@@ -80,8 +131,9 @@ async def receive_receipt(message: Message, db: Database, state: FSMContext, bot
         if admin_review_channel_id and tx:
             caption = (
                 f"🧾 رسید خرید #{tx_id}\nUser: <code>{tx['user_id']}</code>\n"
-                f"Package: {tx['title']}\nCoins: {tx['coins']} | XP: {tx['xp']}\nPrice: {tx['price_label']}\n"
-                f"Text: {text or '-'}"
+                f"Package: {tx['title']}\nCoins: {tx['coins']} | XP: {tx['xp']}\n"
+                f"Original: {tx['original_price_label'] or tx['price_label']}\nFinal: {tx['final_price_label'] or tx['price_label']}\n"
+                f"Discount ID: {tx['discount_code_id'] or '-'}\nText: {text or '-'}"
             )
             if rtype == 'photo' and file_id:
                 await bot.send_photo(admin_review_channel_id, file_id, caption=caption, reply_markup=review_tx_keyboard(tx_id))

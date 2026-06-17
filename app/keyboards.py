@@ -10,10 +10,10 @@ CANCEL_TEXT = "↩️ انصراف / برگشت"
 
 def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text="⚔️ دوئل"), KeyboardButton(text="🏆 لیدربورد")],
-        [KeyboardButton(text="🛒 فروشگاه"), KeyboardButton(text="👤 پروفایل")],
-        [KeyboardButton(text="➕ ثبت سوال"), KeyboardButton(text="🎁 رفرال")],
-        [KeyboardButton(text="🏰 کلن (به‌زودی)")],
+        [KeyboardButton(text="⚔️ دوئل")],
+        [KeyboardButton(text="🛒 فروشگاه"), KeyboardButton(text="🏆 لیدربورد")],
+        [KeyboardButton(text="👤 پروفایل"), KeyboardButton(text="➕ ثبت سوال")],
+        [KeyboardButton(text="🎁 رفرال"), KeyboardButton(text="🏰 کلن (به‌زودی)")],
     ]
     if is_admin:
         rows.append([KeyboardButton(text="🛡 پنل ادمین")])
@@ -116,7 +116,10 @@ def admin_panel() -> InlineKeyboardMarkup:
         ("👤 جستجوی کاربر", "admin:user_search"), ("➕ ادمین", "admin:add_admin"),
         ("➖ حذف ادمین", "admin:remove_admin"), ("💾 بک‌آپ", "admin:backup"),
         ("📥 افزودن Bulk سوال", "admin:bulk_questions"), ("🛒 مدیریت فروشگاه", "admin:shop_manage"),
-        ("🏆 مدیریت لیگ‌ها", "admin:leagues"),
+        ("🎟 کدهای تخفیف", "admin:discounts"), ("🏆 مدیریت لیگ/تیر", "admin:leagues"),
+        ("🛠 تغییر حالت تعمیر", "admin:maintenance_toggle"), ("🖼 عکس استارت", "admin:start_photo"),
+        ("❓ مدیریت سوالات", "admin:question_manage"),
+        ("🧹 پاکسازی ژانر نامعتبر", "admin:question_cleanup"),
     ]:
         b.button(text=text, callback_data=data)
     b.adjust(2)
@@ -146,6 +149,7 @@ def admin_shop_types_keyboard() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🪙 بسته‌های سکه", callback_data="ashop:list:coins")
     b.button(text="⭐ بسته‌های XP", callback_data="ashop:list:xp")
+    b.button(text="🎟 مدیریت کد تخفیف", callback_data="admin:discounts")
     b.button(text="↩️ برگشت", callback_data="admin:back")
     b.adjust(1)
     return b.as_markup()
@@ -190,5 +194,77 @@ def admin_league_edit_keyboard(league_id: int) -> InlineKeyboardMarkup:
     b.button(text="ویرایش کاپ برد", callback_data=f"league_edit:win:{league_id}")
     b.button(text="ویرایش کاپ باخت", callback_data=f"league_edit:loss:{league_id}")
     b.button(text="↩️ برگشت", callback_data="admin:leagues")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def discount_apply_keyboard(tx_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🎟 وارد کردن کد تخفیف", callback_data=f"discount_apply:{tx_id}")
+    b.button(text="ادامه بدون تخفیف", callback_data=f"pay:start:{tx_id}")
+    b.button(text="↩️ انصراف", callback_data="nav:home")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def payment_keyboard(tx_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="پرداخت کارت‌به‌کارت و ارسال رسید", callback_data=f"pay:start:{tx_id}")
+    b.button(text="↩️ برگشت", callback_data="shop_back:sections")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def admin_discounts_keyboard(discounts) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ افزودن کد تخفیف", callback_data="discount:add")
+    for d in discounts:
+        status = "فعال" if d["is_active"] else "غیرفعال"
+        b.button(text=f"🗑 {d['code']} | {d['discount_type']} {d['value']} | {status}", callback_data=f"discount:disable:{d['id']}")
+    b.button(text="↩️ برگشت", callback_data="admin:shop_manage")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def discount_kind_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="درصدی", callback_data="discount_kind:percent")
+    b.button(text="مبلغ ثابت", callback_data="discount_kind:fixed")
+    b.adjust(2)
+    return b.as_markup()
+
+
+def admin_leagues_keyboard(leagues) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for lg in leagues:
+        label = f"✏️ {lg['name']} | cup≥{lg['min_cups']} | +{lg['win_cups']}/{lg['loss_cups']}"
+        b.button(text=label, callback_data=f"league:edit:{lg['id']}")
+    b.button(text="↩️ برگشت", callback_data="admin:back")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def question_manage_keyboard(genres) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for g, c in genres:
+        b.button(text=f"{g} ({c})", callback_data=f"qadmin:genre:{g}")
+    b.button(text="↩️ برگشت", callback_data="admin:back")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def pending_questions_keyboard(questions, genre: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for q in questions:
+        b.button(text=f"#{q['id']} {q['text'][:35]}", callback_data=f"qadmin:view:{q['id']}")
+    b.button(text="↩️ ژانرها", callback_data="admin:question_manage")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def invalid_questions_confirm_keyboard() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ تایید حذف سوالات نامعتبر", callback_data="qcleanup:confirm")
+    b.button(text="❌ انصراف", callback_data="admin:back")
     b.adjust(1)
     return b.as_markup()
